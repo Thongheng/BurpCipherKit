@@ -79,9 +79,12 @@ class SnippetManager:
 
     def create_default_snippets(self):
         default_code = (
-            "def generate(payload, passcode, api_key=\"\", key_order=None):\n"
+            "def generate(payload, passcode, custom_data=None, key_order=None):\n"
             "    import hmac\n"
             "    import hashlib\n"
+            "\n"
+            "    # payload = merged dict of custom_data + request body JSON\n"
+            "    # custom_data = dict {key_name: value} - keys are in payload too\n"
             "\n"
             "    # 1. Parse Passcode\n"
             "    if len(passcode) < 16:\n"
@@ -89,26 +92,24 @@ class SnippetManager:
             "    iv = passcode[-16:]\n"
             "    key = passcode[:-16]\n"
             "\n"
-            "    # 2. Concat API Key\n"
-            "    concat_str = api_key if api_key else \"\"\n"
-            "\n"
-            "    # 3. Determine Keys to Sign\n"
+            "    # 2. Determine Keys to Sign\n"
             "    keys_to_sign = []\n"
             "    if key_order:\n"
             "        keys_to_sign = key_order\n"
             "    else:\n"
-            "        keys_to_sign = [k for k in payload.keys() if k != 'hash' and k != '__keys_order__']\n"
+            "        keys_to_sign = [k for k in payload.keys() if k != 'hash']\n"
             "\n"
-            "    # 4. Concat Payload Values\n"
+            "    # 3. Concat Values (payload has custom_data keys merged in)\n"
+            "    concat_str = \"\"\n"
             "    for k in keys_to_sign:\n"
             "        val = payload.get(k)\n"
             "        if val is None: val = \"\"\n"
             "        concat_str += str(val)\n"
             "\n"
-            "    # 5. Create Message\n"
+            "    # 4. Create Message\n"
             "    message = iv + concat_str\n"
             "\n"
-            "    # 6. Sign\n"
+            "    # 5. Sign\n"
             "    signature = hmac.new(\n"
             "        key.encode('utf-8'),\n"
             "        message.encode('utf-8'),\n"
@@ -125,11 +126,18 @@ class SnippetManager:
 
 
 # =============================================================================
-# Core Logic: Crypto Engine (reused from HashGen.py)
+# Core Logic: Crypto Engine
 # =============================================================================
 class CryptoEngine:
     @staticmethod
-    def execute_snippet(snippet_code, payload, passcode, api_key="", key_order=None):
+    def execute_snippet(snippet_code, payload, passcode, custom_data=None, key_order=None):
+        """
+        Execute a snippet.
+        custom_data: dict of {key_name: value} from the custom data fields.
+        The merge_payload is built by combining custom_data + payload so that
+        key_order can reference both custom data keys and payload keys.
+        Backward compat: if snippet uses old `api_key` str param, first value is passed.
+        """
         local_scope = {}
         global_scope = {
             "hashlib": hashlib,
@@ -139,6 +147,15 @@ class CryptoEngine:
             "time": time
         }
 
+        # Build merged context: custom_data keys come first, then payload keys
+        if custom_data is None:
+            custom_data = {}
+
+        # Merged dict for snippets that want a unified lookup
+        merged = {}
+        merged.update(custom_data)
+        merged.update(payload)
+
         try:
             exec(snippet_code, global_scope, local_scope)
 
@@ -147,15 +164,252 @@ class CryptoEngine:
 
             generate_func = local_scope["generate"]
 
+            # Try new signature: (payload, passcode, custom_data_dict, key_order)
             try:
-                return generate_func(payload, passcode, api_key, key_order)
+                return generate_func(merged, passcode, custom_data, key_order)
             except TypeError as te:
-                if "argument" in str(te):
-                    return generate_func(payload, passcode, api_key)
+                err_msg = str(te)
+                if "argument" in err_msg:
+                    # Fallback for old snippets using api_key (single string)
+                    api_key = list(custom_data.values())[0] if custom_data else ""
+                    try:
+                        return generate_func(merged, passcode, api_key, key_order)
+                    except TypeError:
+                        return generate_func(merged, passcode, api_key)
                 raise te
 
         except Exception as e:
             return "Error: %s\n%s" % (str(e), traceback.format_exc())
+
+
+# =============================================================================
+# UI Helper: Custom Data Fields Manager (key:value rows)
+# =============================================================================
+class CustomDataPanel(JPanel):
+    """
+    A panel that holds one or more key:value custom data fields.
+    Each row: [key_name] : [value] [+] [-]
+    getPairs() returns {key: value} dict used by CryptoEngine.
+    """
+
+    def __init__(self, label_font=None, field_font=None):
+        JPanel.__init__(self)
+        self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
+        self._label_font = label_font or Font("SansSerif", Font.BOLD, 12)
+        self._field_font = field_font or Font("SansSerif", Font.PLAIN, 12)
+        self._rows = []  # list of (key_field, value_field)
+        self._addFieldRow()
+
+    def _addFieldRow(self, key="", value=""):
+        row = JPanel(BorderLayout(4, 0))
+        row.setMaximumSize(Dimension(9999, 30))
+        row.setAlignmentX(Component.LEFT_ALIGNMENT)
+
+        # Key field (narrower, fixed ~90px)
+        keyField = JTextField(key)
+        keyField.setFont(self._field_font)
+        keyField.setPreferredSize(Dimension(90, 26))
+        keyField.setToolTipText("Key name (use in Keys Order)")
+
+        # Separator label
+        sep = JLabel(":")
+        sep.setFont(self._label_font)
+        sep.setBorder(EmptyBorder(0, 4, 0, 4))
+
+        # Value field (stretches)
+        valueField = JTextField(value)
+        valueField.setFont(self._field_font)
+
+        # Left part: key + colon + value
+        kvPanel = JPanel(BorderLayout(0, 0))
+        kvPanel.add(keyField, BorderLayout.WEST)
+        kvPanel.add(sep, BorderLayout.CENTER)
+        kvPanel.add(valueField, BorderLayout.EAST)
+        # Make value field stretch with remaining space
+        kvPanel2 = JPanel(BorderLayout(2, 0))
+        kvPanel2.add(keyField, BorderLayout.WEST)
+        kvPanel2.add(sep, BorderLayout.CENTER)
+        kvPanel2.add(valueField, BorderLayout.CENTER)
+        row.add(kvPanel2, BorderLayout.CENTER)
+
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
+        addBtn = JButton("+")
+        addBtn.setFont(Font("SansSerif", Font.BOLD, 11))
+        addBtn.setPreferredSize(Dimension(32, 24))
+        addBtn.setToolTipText("Add another custom data field")
+        addBtn.addActionListener(lambda e: self._onAdd())
+        btnPanel.add(addBtn)
+
+        removeBtn = JButton("-")
+        removeBtn.setFont(Font("SansSerif", Font.BOLD, 11))
+        removeBtn.setPreferredSize(Dimension(32, 24))
+        removeBtn.setToolTipText("Remove this field")
+        removeBtn.addActionListener(lambda e, r=row, kf=keyField, vf=valueField: self._onRemove(r, kf, vf))
+        btnPanel.add(removeBtn)
+
+        row.add(btnPanel, BorderLayout.EAST)
+
+        self._rows.append((keyField, valueField))
+        self.add(row)
+        self.add(Box.createVerticalStrut(3))
+        self.revalidate()
+        self.repaint()
+
+    def _onAdd(self):
+        self._addFieldRow()
+
+    def _onRemove(self, row, keyField, valueField):
+        if len(self._rows) <= 1:
+            keyField.setText("")
+            valueField.setText("")
+            return
+        self._rows.remove((keyField, valueField))
+        self.remove(row)
+        comps = self.getComponents()
+        for c in comps:
+            if isinstance(c, Box.Filler):
+                self.remove(c)
+                break
+        self.revalidate()
+        self.repaint()
+
+    def getPairs(self):
+        """Return dict of {key: value} for all rows with a key name."""
+        result = {}
+        for kf, vf in self._rows:
+            k = kf.getText().strip()
+            v = vf.getText()
+            if k:
+                result[k] = v
+        return result
+
+    def getKeys(self):
+        """Return list of non-empty key names."""
+        return [kf.getText().strip() for kf, vf in self._rows if kf.getText().strip()]
+
+    def getValues(self):
+        """Return list of values (backward compat)."""
+        return [vf.getText() for kf, vf in self._rows]
+
+    def setPairs(self, pairs):
+        """Set rows from a dict {key: value}."""
+        self.removeAll()
+        self._rows = []
+        if not pairs:
+            self._addFieldRow()
+            return
+        for k, v in pairs.items():
+            self._addFieldRow(str(k), str(v) if v else "")
+
+    def getFirstValue(self):
+        if self._rows:
+            return self._rows[0][1].getText()
+        return ""
+
+
+# =============================================================================
+# Compact Custom Data Panel for inline editor tab (narrower, key:value)
+# =============================================================================
+class CompactCustomDataPanel(JPanel):
+    """Compact key:value custom data panel for the inline request editor tab."""
+
+    def __init__(self, font=None):
+        JPanel.__init__(self)
+        self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
+        self._font = font or Font("SansSerif", Font.PLAIN, 11)
+        self._rows = []
+        self._addFieldRow()
+
+    def _addFieldRow(self, key="", value=""):
+        row = JPanel(BorderLayout(2, 0))
+        row.setMaximumSize(Dimension(9999, 24))
+        row.setAlignmentX(Component.LEFT_ALIGNMENT)
+
+        keyField = JTextField(key)
+        keyField.setFont(self._font)
+        keyField.setPreferredSize(Dimension(70, 20))
+        keyField.setToolTipText("Key name (use in Keys Order)")
+
+        sep = JLabel(":")
+        sep.setFont(self._font)
+        sep.setBorder(EmptyBorder(0, 2, 0, 2))
+
+        valueField = JTextField(value)
+        valueField.setFont(self._font)
+
+        kvPanel = JPanel(BorderLayout(2, 0))
+        kvPanel.add(keyField, BorderLayout.WEST)
+        kvPanel.add(sep, BorderLayout.CENTER)
+        kvPanel.add(valueField, BorderLayout.CENTER)
+        row.add(kvPanel, BorderLayout.CENTER)
+
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 1, 0))
+        addBtn = JButton("+")
+        addBtn.setFont(Font("SansSerif", Font.BOLD, 10))
+        addBtn.setPreferredSize(Dimension(26, 20))
+        addBtn.addActionListener(lambda e: self._onAdd())
+        btnPanel.add(addBtn)
+
+        removeBtn = JButton("-")
+        removeBtn.setFont(Font("SansSerif", Font.BOLD, 10))
+        removeBtn.setPreferredSize(Dimension(26, 20))
+        removeBtn.addActionListener(lambda e, r=row, kf=keyField, vf=valueField: self._onRemove(r, kf, vf))
+        btnPanel.add(removeBtn)
+
+        row.add(btnPanel, BorderLayout.EAST)
+
+        self._rows.append((keyField, valueField))
+        self.add(row)
+        self.add(Box.createVerticalStrut(2))
+        self.revalidate()
+        self.repaint()
+
+    def _onAdd(self):
+        self._addFieldRow()
+
+    def _onRemove(self, row, keyField, valueField):
+        if len(self._rows) <= 1:
+            keyField.setText("")
+            valueField.setText("")
+            return
+        self._rows.remove((keyField, valueField))
+        self.remove(row)
+        comps = self.getComponents()
+        for c in comps:
+            if isinstance(c, Box.Filler):
+                self.remove(c)
+                break
+        self.revalidate()
+        self.repaint()
+
+    def getPairs(self):
+        result = {}
+        for kf, vf in self._rows:
+            k = kf.getText().strip()
+            v = vf.getText()
+            if k:
+                result[k] = v
+        return result
+
+    def getKeys(self):
+        return [kf.getText().strip() for kf, vf in self._rows if kf.getText().strip()]
+
+    def getValues(self):
+        return [vf.getText() for kf, vf in self._rows]
+
+    def setPairs(self, pairs):
+        self.removeAll()
+        self._rows = []
+        if not pairs:
+            self._addFieldRow()
+            return
+        for k, v in pairs.items():
+            self._addFieldRow(str(k), str(v) if v else "")
+
+    def getFirstValue(self):
+        if self._rows:
+            return self._rows[0][1].getText()
+        return ""
 
 
 # =============================================================================
@@ -202,6 +456,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._editable = editable
         self._currentMessage = None
         self._headerBytes = None
+        self._keysUserEdited = False  # Track if user manually edited keys
 
         # Build the compact inline UI
         self._panel = JPanel(BorderLayout(3, 3))
@@ -263,27 +518,29 @@ class HashGenEditorTab(IMessageEditorTab):
         self._passcodeField.setFont(smallFont)
         configPanel.add(self._passcodeField, gbc)
 
-        # Row 2: API Key
+        # Row 2: Custom Data
         gbc.gridy = 2
         gbc.gridx = 0
         gbc.weightx = 0
         gbc.fill = GridBagConstraints.NONE
-        lbl = JLabel("API Key:")
+        gbc.anchor = GridBagConstraints.NORTHWEST
+        lbl = JLabel("Custom Data:")
         lbl.setFont(labelFont)
         configPanel.add(lbl, gbc)
 
         gbc.gridx = 1
         gbc.weightx = 1.0
         gbc.fill = GridBagConstraints.HORIZONTAL
-        self._apiKeyField = JTextField()
-        self._apiKeyField.setFont(smallFont)
-        configPanel.add(self._apiKeyField, gbc)
+        gbc.anchor = GridBagConstraints.WEST
+        self._customDataPanel = CompactCustomDataPanel(font=smallFont)
+        configPanel.add(self._customDataPanel, gbc)
 
         # Row 3: Keys Order
         gbc.gridy = 3
         gbc.gridx = 0
         gbc.weightx = 0
         gbc.fill = GridBagConstraints.NONE
+        gbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Keys Order:")
         lbl.setFont(labelFont)
         configPanel.add(lbl, gbc)
@@ -293,6 +550,10 @@ class HashGenEditorTab(IMessageEditorTab):
         gbc.fill = GridBagConstraints.HORIZONTAL
         self._keysField = JTextField()
         self._keysField.setFont(smallFont)
+        # Track manual edits to keys order
+        self._keysField.getDocument().addDocumentListener(
+            PayloadDocumentListener(self._onKeysManualEdit)
+        )
         configPanel.add(self._keysField, gbc)
 
         # Row 4: Hash Field + Buttons
@@ -337,11 +598,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._bodyArea.setWrapStyleWord(True)
         self._bodyArea.setEditable(editable)
 
-        # Auto-extract keys when body changes
-        self._bodyArea.getDocument().addDocumentListener(
-            PayloadDocumentListener(self._tryExtractKeys)
-        )
-        # Auto-format JSON on focus lost
+        # Auto-format JSON on focus lost (NO auto-extract keys here)
         self._bodyArea.addFocusListener(
             PayloadFocusListener(self._tryFormatJson)
         )
@@ -390,15 +647,20 @@ class HashGenEditorTab(IMessageEditorTab):
             passcode = ext._passcodeField.getText()
             if passcode:
                 self._passcodeField.setText(passcode)
-            api_key = ext._apiKeyField.getText()
-            if api_key:
-                self._apiKeyField.setText(api_key)
+            # Sync custom data pairs
+            main_pairs = ext._customDataPanel.getPairs()
+            if any(main_pairs.values()):
+                self._customDataPanel.setPairs(main_pairs)
             # Sync algorithm selection
             mainAlgo = ext._algoCombo.getSelectedItem()
             if mainAlgo:
                 self._algoCombo.setSelectedItem(mainAlgo)
         except:
             pass
+
+    def _onKeysManualEdit(self):
+        """Mark that the user has manually edited the keys order field."""
+        self._keysUserEdited = True
 
     # --- IMessageEditorTab interface ---
 
@@ -409,14 +671,12 @@ class HashGenEditorTab(IMessageEditorTab):
         return self._panel
 
     def isEnabled(self, content, isRequest):
-        # Only show for requests that have a body
         if not isRequest or content is None:
             return False
         try:
             analyzed = self._helpers.analyzeRequest(content)
             bodyOffset = analyzed.getBodyOffset()
             body = self._helpers.bytesToString(content[bodyOffset:])
-            # Show tab if body is non-empty (especially for JSON bodies)
             return len(body.strip()) > 0
         except:
             return False
@@ -432,7 +692,6 @@ class HashGenEditorTab(IMessageEditorTab):
         analyzed = self._helpers.analyzeRequest(content)
         bodyOffset = analyzed.getBodyOffset()
 
-        # Store headers portion for rebuilding  
         self._headerBytes = content[:bodyOffset]
 
         body = self._helpers.bytesToString(content[bodyOffset:])
@@ -447,20 +706,19 @@ class HashGenEditorTab(IMessageEditorTab):
         self._bodyArea.setText(body)
         self._bodyArea.setCaretPosition(0)
 
-        # Auto-extract keys
-        self._tryExtractKeys()
+        # Only auto-extract keys if user has NOT manually edited them
+        if not self._keysUserEdited:
+            self._tryExtractKeys()
 
         # Sync config from main tab
         self._syncFromMainTab()
 
     def getMessage(self):
-        """Return the modified HTTP message (headers + edited body)."""
         if self._currentMessage is None:
             return self._currentMessage
 
         body_str = self._bodyArea.getText().strip()
 
-        # Compact the JSON if valid (remove pretty-print for wire format)
         try:
             parsed = json.loads(body_str)
             body_str = json.dumps(parsed)
@@ -469,7 +727,6 @@ class HashGenEditorTab(IMessageEditorTab):
 
         body_bytes = self._helpers.stringToBytes(body_str)
 
-        # Rebuild: original headers + new body
         analyzed = self._helpers.analyzeRequest(self._currentMessage)
         headers = analyzed.getHeaders()
         return self._helpers.buildHttpMessage(headers, body_bytes)
@@ -477,13 +734,11 @@ class HashGenEditorTab(IMessageEditorTab):
     def isModified(self):
         if self._currentMessage is None:
             return False
-        # Compare current body text to original
         analyzed = self._helpers.analyzeRequest(self._currentMessage)
         bodyOffset = analyzed.getBodyOffset()
         originalBody = self._helpers.bytesToString(self._currentMessage[bodyOffset:])
 
         currentBody = self._bodyArea.getText().strip()
-        # Normalize both for comparison
         try:
             orig = json.dumps(json.loads(originalBody))
             curr = json.dumps(json.loads(currentBody))
@@ -500,16 +755,13 @@ class HashGenEditorTab(IMessageEditorTab):
     # --- Actions ---
 
     def _onGenerate(self, event=None):
-        """Generate hash and show in the output area."""
         result = self._computeHash()
         self._hashOutput.setText(str(result))
 
     def _onGenerateAndInject(self, event=None):
-        """Generate hash and inject it into the JSON body."""
         result = self._computeHash()
         if result and not str(result).startswith("Error"):
             self._hashOutput.setText(str(result))
-            # Inject into body
             body_str = self._bodyArea.getText().strip()
             try:
                 data = json.loads(body_str)
@@ -525,7 +777,6 @@ class HashGenEditorTab(IMessageEditorTab):
             self._hashOutput.setText(str(result))
 
     def _computeHash(self):
-        """Run the selected snippet against the current body."""
         name = self._algoCombo.getSelectedItem()
         if not name:
             return "Error: No algorithm selected."
@@ -538,7 +789,7 @@ class HashGenEditorTab(IMessageEditorTab):
             body_str = self._bodyArea.getText().strip()
             payload = json.loads(body_str)
             passcode = self._passcodeField.getText()
-            api_key = self._apiKeyField.getText()
+            custom_data = self._customDataPanel.getPairs()
 
             keys_str = self._keysField.getText().strip()
             key_order = None
@@ -546,7 +797,7 @@ class HashGenEditorTab(IMessageEditorTab):
                 key_order = [k.strip() for k in keys_str.split(',') if k.strip()]
 
             return CryptoEngine.execute_snippet(
-                snippet["code"], payload, passcode, api_key, key_order
+                snippet["code"], payload, passcode, custom_data, key_order
             )
         except ValueError:
             return "Error: Invalid JSON body"
@@ -554,7 +805,7 @@ class HashGenEditorTab(IMessageEditorTab):
             return "Error: %s" % str(e)
 
     def _tryExtractKeys(self):
-        """Auto-extract keys from JSON body."""
+        """Auto-extract keys from JSON body. Only if user hasn't manually edited."""
         try:
             body_str = self._bodyArea.getText().strip()
             if not body_str:
@@ -565,12 +816,13 @@ class HashGenEditorTab(IMessageEditorTab):
                 new_keys_str = ", ".join(keys)
                 current = self._keysField.getText().strip()
                 if current != new_keys_str:
+                    self._keysUserEdited = False  # Reset flag during programmatic set
                     self._keysField.setText(new_keys_str)
+                    self._keysUserEdited = False  # Ensure it stays false
         except:
             pass
 
     def _tryFormatJson(self):
-        """Auto-format JSON on focus lost."""
         try:
             body_str = self._bodyArea.getText().strip()
             if not body_str:
@@ -656,7 +908,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         return menu_items if menu_items else None
 
     def _onContextMenuSend(self, invocation):
-        """Extract request body and populate the Generator payload field."""
         messages = invocation.getSelectedMessages()
         if messages and len(messages) > 0:
             request = messages[0].getRequest()
@@ -676,7 +927,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                     self._payloadArea.setText(body_str)
                     self._tryExtractKeys()
 
-                    # Switch to the HashGen tab
                     parent = self._mainPanel.getParent()
                     if parent:
                         idx = parent.indexOfComponent(self._mainPanel)
@@ -721,9 +971,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        # --- Left side: inputs ---
-        leftPanel = JPanel()
-        leftPanel.setLayout(BoxLayout(leftPanel, BoxLayout.Y_AXIS))
+        # --- Left side: inputs (GridBagLayout for consistent label+field alignment) ---
+        leftPanel = JPanel(GridBagLayout())
         leftPanel.setBorder(
             BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder(
@@ -735,51 +984,87 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 EmptyBorder(10, 10, 10, 10)
             )
         )
-        leftPanel.setPreferredSize(Dimension(320, 0))
 
-        # Algorithm selector
-        leftPanel.add(self._createLabel("Algorithm:"))
-        leftPanel.add(Box.createVerticalStrut(4))
+        lgbc = GridBagConstraints()
+        lgbc.insets = Insets(3, 4, 3, 4)
+        lgbc.anchor = GridBagConstraints.NORTHWEST
+        lgbc.gridx = 0
+        lgbc.weightx = 1.0
+        lgbc.fill = GridBagConstraints.HORIZONTAL
+
+        labelFont = Font("SansSerif", Font.BOLD, 12)
+        fieldFont = Font("SansSerif", Font.PLAIN, 12)
+
+        # Algorithm
+        lgbc.gridy = 0
+        lbl = JLabel("Algorithm:")
+        lbl.setFont(labelFont)
+        leftPanel.add(lbl, lgbc)
+
+        lgbc.gridy = 1
         names = self.snippet_manager.get_all_names()
         if not names:
             names = ["Default"]
         self._algoCombo = JComboBox(names)
-        self._algoCombo.setMaximumSize(Dimension(9999, 30))
-        leftPanel.add(self._algoCombo)
-        leftPanel.add(Box.createVerticalStrut(12))
+        self._algoCombo.setFont(fieldFont)
+        leftPanel.add(self._algoCombo, lgbc)
 
-        # Passcode
-        leftPanel.add(self._createLabel("PassCode (Key+IV):"))
-        leftPanel.add(Box.createVerticalStrut(4))
+        # PassCode
+        lgbc.gridy = 2
+        lgbc.insets = Insets(10, 4, 3, 4)
+        lbl = JLabel("PassCode (Key+IV):")
+        lbl.setFont(labelFont)
+        leftPanel.add(lbl, lgbc)
+
+        lgbc.gridy = 3
+        lgbc.insets = Insets(3, 4, 3, 4)
         self._passcodeField = JTextField()
-        self._passcodeField.setMaximumSize(Dimension(9999, 30))
-        leftPanel.add(self._passcodeField)
-        leftPanel.add(Box.createVerticalStrut(12))
+        self._passcodeField.setFont(fieldFont)
+        leftPanel.add(self._passcodeField, lgbc)
 
-        # API Key
-        leftPanel.add(self._createLabel("API Key (Optional):"))
-        leftPanel.add(Box.createVerticalStrut(4))
-        self._apiKeyField = JTextField()
-        self._apiKeyField.setMaximumSize(Dimension(9999, 30))
-        leftPanel.add(self._apiKeyField)
-        leftPanel.add(Box.createVerticalStrut(12))
+        # Custom Data
+        lgbc.gridy = 4
+        lgbc.insets = Insets(10, 4, 3, 4)
+        lgbc.anchor = GridBagConstraints.WEST
+        lbl = JLabel("Custom Data:")
+        lbl.setFont(labelFont)
+        leftPanel.add(lbl, lgbc)
+
+        lgbc.gridy = 5
+        lgbc.insets = Insets(3, 4, 3, 4)
+        lgbc.anchor = GridBagConstraints.NORTHWEST
+        self._customDataPanel = CustomDataPanel(
+            label_font=labelFont, field_font=fieldFont
+        )
+        leftPanel.add(self._customDataPanel, lgbc)
 
         # Keys Order
-        leftPanel.add(self._createLabel("Keys Order (comma separated):"))
-        leftPanel.add(Box.createVerticalStrut(4))
+        lgbc.gridy = 6
+        lgbc.insets = Insets(10, 4, 3, 4)
+        lgbc.anchor = GridBagConstraints.WEST
+        lbl = JLabel("Keys Order (comma separated):")
+        lbl.setFont(labelFont)
+        leftPanel.add(lbl, lgbc)
+
+        lgbc.gridy = 7
+        lgbc.insets = Insets(3, 4, 3, 4)
         self._keysOrderField = JTextField()
-        self._keysOrderField.setMaximumSize(Dimension(9999, 30))
-        leftPanel.add(self._keysOrderField)
-        leftPanel.add(Box.createVerticalStrut(20))
+        self._keysOrderField.setFont(fieldFont)
+        leftPanel.add(self._keysOrderField, lgbc)
 
         # Generate button
+        lgbc.gridy = 8
+        lgbc.insets = Insets(20, 4, 4, 4)
+        lgbc.anchor = GridBagConstraints.NORTHWEST
         self._generateBtn = JButton("Generate Hash", actionPerformed=self._onGenerate)
         self._generateBtn.setFont(Font("SansSerif", Font.BOLD, 14))
-        self._generateBtn.setMaximumSize(Dimension(9999, 45))
-        self._generateBtn.setAlignmentX(Component.CENTER_ALIGNMENT)
-        leftPanel.add(self._generateBtn)
+        leftPanel.add(self._generateBtn, lgbc)
 
-        leftPanel.add(Box.createVerticalGlue())
+        # Spacer to push everything to the top
+        lgbc.gridy = 9
+        lgbc.weighty = 1.0
+        lgbc.insets = Insets(0, 0, 0, 0)
+        leftPanel.add(JPanel(), lgbc)  # empty filler
 
         # --- Right side: text areas ---
         rightPanel = JPanel(GridBagLayout())
@@ -893,7 +1178,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         panel.add(topPanel, BorderLayout.NORTH)
 
         # Info label
-        infoLabel = JLabel("Python code must define: generate(payload, passcode, api_key=\"\", key_order=None)")
+        infoLabel = JLabel("Python code must define: generate(payload, passcode, custom_data=None, key_order=None)")
         infoLabel.setFont(Font("SansSerif", Font.ITALIC, 11))
         infoLabel.setForeground(Color(130, 130, 130))
 
@@ -904,10 +1189,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._codeArea.setLineWrap(False)
 
         default_template = (
-            'def generate(payload, passcode, api_key="", key_order=None):\n'
+            'def generate(payload, passcode, custom_data=None, key_order=None):\n'
             '    import hashlib\n'
-            '    # Implement your logic here\n'
-            '    # key_order is a list of keys if provided by user\n'
+            '    # payload = merged dict of Custom Data fields + request body JSON\n'
+            '    # custom_data = dict {key_name: value} from Custom Data fields\n'
+            '    # key_order = list of key names to sign (from Keys Order field)\n'
+            '    # Example: access api_key value via payload["api_key"]\n'
             '    return "hash_result"'
         )
         self._codeArea.setText(default_template)
@@ -956,7 +1243,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             payload_str = self._payloadArea.getText().strip()
             payload = json.loads(payload_str)
             passcode = self._passcodeField.getText()
-            api_key = self._apiKeyField.getText()
+            custom_data = self._customDataPanel.getPairs()
 
             keys_str = self._keysOrderField.getText().strip()
             key_order = None
@@ -964,7 +1251,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 key_order = [k.strip() for k in keys_str.split(',') if k.strip()]
 
             result = CryptoEngine.execute_snippet(
-                snippet["code"], payload, passcode, api_key, key_order
+                snippet["code"], payload, passcode, custom_data, key_order
             )
 
             self._outputArea.setText(str(result))
@@ -975,7 +1262,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._outputArea.setText("Error: %s" % str(e))
 
     def _tryExtractKeys(self):
-        """Auto-extract keys from JSON payload."""
         try:
             payload_str = self._payloadArea.getText().strip()
             if not payload_str:
@@ -991,7 +1277,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             pass
 
     def _tryFormatJson(self):
-        """Auto-format JSON on focus lost."""
         try:
             payload_str = self._payloadArea.getText().strip()
             if not payload_str:
@@ -1091,7 +1376,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 print("[*] Snippet deleted: %s" % selected)
 
     def _refreshAlgoList(self):
-        """Refresh the algorithm dropdown in the Generator tab."""
         self._algoCombo.removeAllItems()
         names = self.snippet_manager.get_all_names()
         if not names:
