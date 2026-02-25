@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 # HashGen - Burp Suite Extension
 # Converts the HashGen crypto tool into a Burp Suite extension.
-# Requires Jython configured in Burp Suite (Extender → Options → Python Environment).
+# Requires Jython configured in Burp Suite (Extender > Options > Python Environment).
 
-from burp import IBurpExtender, ITab, IContextMenuFactory, IContextMenuInvocation
+from burp import (
+    IBurpExtender, ITab, IContextMenuFactory, IContextMenuInvocation,
+    IMessageEditorTabFactory, IMessageEditorTab
+)
 
 from javax.swing import (
     JPanel, JLabel, JTextField, JTextArea, JButton, JComboBox,
@@ -13,9 +16,9 @@ from javax.swing import (
 from javax.swing.border import EmptyBorder, TitledBorder
 from java.awt import (
     BorderLayout, GridBagLayout, GridBagConstraints, Insets,
-    Font, Color, Dimension, FlowLayout, Component
+    Font, Color, Dimension, FlowLayout, Component, GridLayout
 )
-from java.awt.event import FocusListener, FocusAdapter, ActionListener
+from java.awt.event import FocusAdapter
 from javax.swing.event import DocumentListener
 
 import json
@@ -184,9 +187,406 @@ class PayloadDocumentListener(DocumentListener):
 
 
 # =============================================================================
+# IMessageEditorTab: Inline HashGen tab in request viewer
+# =============================================================================
+class HashGenEditorTab(IMessageEditorTab):
+    """
+    Appears as a tab alongside Pretty/Raw/Hex in the request viewer.
+    Optimized for inline editing: shows the request body with config controls
+    to generate and inject the hash directly into the JSON body.
+    """
+
+    def __init__(self, extender, controller, editable):
+        self._extender = extender
+        self._helpers = extender._helpers
+        self._editable = editable
+        self._currentMessage = None
+        self._headerBytes = None
+
+        # Build the compact inline UI
+        self._panel = JPanel(BorderLayout(3, 3))
+        self._panel.setBorder(EmptyBorder(4, 4, 4, 4))
+
+        # --- Top config bar: responsive 2-column vertical form ---
+        configPanel = JPanel(GridBagLayout())
+        configPanel.setBorder(
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder(
+                    BorderFactory.createLineBorder(Color(80, 80, 80)),
+                    " HashGen Config ",
+                    TitledBorder.LEFT, TitledBorder.TOP,
+                    Font("SansSerif", Font.BOLD, 11)
+                ),
+                EmptyBorder(3, 5, 3, 5)
+            )
+        )
+
+        gbc = GridBagConstraints()
+        gbc.insets = Insets(1, 3, 1, 3)
+        gbc.anchor = GridBagConstraints.WEST
+        smallFont = Font("SansSerif", Font.PLAIN, 11)
+        labelFont = Font("SansSerif", Font.BOLD, 11)
+
+        names = extender.snippet_manager.get_all_names()
+        if not names:
+            names = ["Default"]
+
+        # Row 0: Algorithm
+        gbc.gridy = 0
+        gbc.gridx = 0
+        gbc.weightx = 0
+        gbc.fill = GridBagConstraints.NONE
+        lbl = JLabel("Algorithm:")
+        lbl.setFont(labelFont)
+        configPanel.add(lbl, gbc)
+
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        self._algoCombo = JComboBox(names)
+        self._algoCombo.setFont(smallFont)
+        configPanel.add(self._algoCombo, gbc)
+
+        # Row 1: PassCode
+        gbc.gridy = 1
+        gbc.gridx = 0
+        gbc.weightx = 0
+        gbc.fill = GridBagConstraints.NONE
+        lbl = JLabel("PassCode:")
+        lbl.setFont(labelFont)
+        configPanel.add(lbl, gbc)
+
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        self._passcodeField = JTextField()
+        self._passcodeField.setFont(smallFont)
+        configPanel.add(self._passcodeField, gbc)
+
+        # Row 2: API Key
+        gbc.gridy = 2
+        gbc.gridx = 0
+        gbc.weightx = 0
+        gbc.fill = GridBagConstraints.NONE
+        lbl = JLabel("API Key:")
+        lbl.setFont(labelFont)
+        configPanel.add(lbl, gbc)
+
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        self._apiKeyField = JTextField()
+        self._apiKeyField.setFont(smallFont)
+        configPanel.add(self._apiKeyField, gbc)
+
+        # Row 3: Keys Order
+        gbc.gridy = 3
+        gbc.gridx = 0
+        gbc.weightx = 0
+        gbc.fill = GridBagConstraints.NONE
+        lbl = JLabel("Keys Order:")
+        lbl.setFont(labelFont)
+        configPanel.add(lbl, gbc)
+
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        self._keysField = JTextField()
+        self._keysField.setFont(smallFont)
+        configPanel.add(self._keysField, gbc)
+
+        # Row 4: Hash Field + Buttons
+        gbc.gridy = 4
+        gbc.gridx = 0
+        gbc.weightx = 0
+        gbc.fill = GridBagConstraints.NONE
+        lbl = JLabel("Hash Field:")
+        lbl.setFont(labelFont)
+        configPanel.add(lbl, gbc)
+
+        gbc.gridx = 1
+        gbc.weightx = 1.0
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        row4 = JPanel(BorderLayout(4, 0))
+        self._hashFieldName = JTextField("hash")
+        self._hashFieldName.setFont(smallFont)
+        self._hashFieldName.setToolTipText("JSON key name where the hash will be injected")
+        self._hashFieldName.setPreferredSize(Dimension(80, 24))
+        row4.add(self._hashFieldName, BorderLayout.CENTER)
+
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
+        self._genBtn = JButton("Generate", actionPerformed=self._onGenerate)
+        self._genBtn.setFont(Font("SansSerif", Font.BOLD, 11))
+        self._injectBtn = JButton("Gen & Inject", actionPerformed=self._onGenerateAndInject)
+        self._injectBtn.setFont(Font("SansSerif", Font.BOLD, 11))
+        self._injectBtn.setToolTipText("Generate hash and inject into the JSON body")
+        btnPanel.add(self._genBtn)
+        btnPanel.add(self._injectBtn)
+        row4.add(btnPanel, BorderLayout.EAST)
+        configPanel.add(row4, gbc)
+
+        self._panel.add(configPanel, BorderLayout.NORTH)
+
+        # --- Center: Body editor + hash output (vertical split) ---
+        centerPanel = JPanel(BorderLayout(0, 5))
+
+        # Body text area (editable request body)
+        self._bodyArea = JTextArea(15, 60)
+        self._bodyArea.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._bodyArea.setLineWrap(True)
+        self._bodyArea.setWrapStyleWord(True)
+        self._bodyArea.setEditable(editable)
+
+        # Auto-extract keys when body changes
+        self._bodyArea.getDocument().addDocumentListener(
+            PayloadDocumentListener(self._tryExtractKeys)
+        )
+        # Auto-format JSON on focus lost
+        self._bodyArea.addFocusListener(
+            PayloadFocusListener(self._tryFormatJson)
+        )
+
+        bodyScroll = JScrollPane(self._bodyArea)
+        bodyScroll.setBorder(
+            BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(Color(80, 80, 80)),
+                " Request Body (editable) ",
+                TitledBorder.LEFT, TitledBorder.TOP,
+                Font("SansSerif", Font.PLAIN, 11)
+            )
+        )
+
+        # Hash output (read-only, compact)
+        self._hashOutput = JTextArea(3, 60)
+        self._hashOutput.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._hashOutput.setEditable(False)
+        self._hashOutput.setLineWrap(True)
+        self._hashOutput.setWrapStyleWord(True)
+
+        hashScroll = JScrollPane(self._hashOutput)
+        hashScroll.setBorder(
+            BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(Color(80, 80, 80)),
+                " Generated Hash ",
+                TitledBorder.LEFT, TitledBorder.TOP,
+                Font("SansSerif", Font.PLAIN, 11)
+            )
+        )
+        hashScroll.setPreferredSize(Dimension(0, 80))
+
+        splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, bodyScroll, hashScroll)
+        splitPane.setResizeWeight(0.8)
+        centerPanel.add(splitPane, BorderLayout.CENTER)
+
+        self._panel.add(centerPanel, BorderLayout.CENTER)
+
+        # Sync config fields from the main tab if available
+        self._syncFromMainTab()
+
+    def _syncFromMainTab(self):
+        """Copy config values from the main HashGen tab to this inline tab."""
+        try:
+            ext = self._extender
+            passcode = ext._passcodeField.getText()
+            if passcode:
+                self._passcodeField.setText(passcode)
+            api_key = ext._apiKeyField.getText()
+            if api_key:
+                self._apiKeyField.setText(api_key)
+            # Sync algorithm selection
+            mainAlgo = ext._algoCombo.getSelectedItem()
+            if mainAlgo:
+                self._algoCombo.setSelectedItem(mainAlgo)
+        except:
+            pass
+
+    # --- IMessageEditorTab interface ---
+
+    def getTabCaption(self):
+        return "HashGen"
+
+    def getUiComponent(self):
+        return self._panel
+
+    def isEnabled(self, content, isRequest):
+        # Only show for requests that have a body
+        if not isRequest or content is None:
+            return False
+        try:
+            analyzed = self._helpers.analyzeRequest(content)
+            bodyOffset = analyzed.getBodyOffset()
+            body = self._helpers.bytesToString(content[bodyOffset:])
+            # Show tab if body is non-empty (especially for JSON bodies)
+            return len(body.strip()) > 0
+        except:
+            return False
+
+    def setMessage(self, content, isRequest):
+        if content is None:
+            self._bodyArea.setText("")
+            self._currentMessage = None
+            self._headerBytes = None
+            return
+
+        self._currentMessage = content
+        analyzed = self._helpers.analyzeRequest(content)
+        bodyOffset = analyzed.getBodyOffset()
+
+        # Store headers portion for rebuilding  
+        self._headerBytes = content[:bodyOffset]
+
+        body = self._helpers.bytesToString(content[bodyOffset:])
+
+        # Try to pretty-print JSON
+        try:
+            parsed = json.loads(body)
+            body = json.dumps(parsed, indent=2)
+        except:
+            pass
+
+        self._bodyArea.setText(body)
+        self._bodyArea.setCaretPosition(0)
+
+        # Auto-extract keys
+        self._tryExtractKeys()
+
+        # Sync config from main tab
+        self._syncFromMainTab()
+
+    def getMessage(self):
+        """Return the modified HTTP message (headers + edited body)."""
+        if self._currentMessage is None:
+            return self._currentMessage
+
+        body_str = self._bodyArea.getText().strip()
+
+        # Compact the JSON if valid (remove pretty-print for wire format)
+        try:
+            parsed = json.loads(body_str)
+            body_str = json.dumps(parsed)
+        except:
+            pass
+
+        body_bytes = self._helpers.stringToBytes(body_str)
+
+        # Rebuild: original headers + new body
+        analyzed = self._helpers.analyzeRequest(self._currentMessage)
+        headers = analyzed.getHeaders()
+        return self._helpers.buildHttpMessage(headers, body_bytes)
+
+    def isModified(self):
+        if self._currentMessage is None:
+            return False
+        # Compare current body text to original
+        analyzed = self._helpers.analyzeRequest(self._currentMessage)
+        bodyOffset = analyzed.getBodyOffset()
+        originalBody = self._helpers.bytesToString(self._currentMessage[bodyOffset:])
+
+        currentBody = self._bodyArea.getText().strip()
+        # Normalize both for comparison
+        try:
+            orig = json.dumps(json.loads(originalBody))
+            curr = json.dumps(json.loads(currentBody))
+            return orig != curr
+        except:
+            return originalBody.strip() != currentBody
+
+    def getSelectedData(self):
+        selected = self._bodyArea.getSelectedText()
+        if selected:
+            return self._helpers.stringToBytes(selected)
+        return None
+
+    # --- Actions ---
+
+    def _onGenerate(self, event=None):
+        """Generate hash and show in the output area."""
+        result = self._computeHash()
+        self._hashOutput.setText(str(result))
+
+    def _onGenerateAndInject(self, event=None):
+        """Generate hash and inject it into the JSON body."""
+        result = self._computeHash()
+        if result and not str(result).startswith("Error"):
+            self._hashOutput.setText(str(result))
+            # Inject into body
+            body_str = self._bodyArea.getText().strip()
+            try:
+                data = json.loads(body_str)
+                field_name = self._hashFieldName.getText().strip()
+                if not field_name:
+                    field_name = "hash"
+                data[field_name] = str(result)
+                self._bodyArea.setText(json.dumps(data, indent=2))
+                self._bodyArea.setCaretPosition(0)
+            except Exception as e:
+                self._hashOutput.setText("Error injecting hash: %s" % str(e))
+        else:
+            self._hashOutput.setText(str(result))
+
+    def _computeHash(self):
+        """Run the selected snippet against the current body."""
+        name = self._algoCombo.getSelectedItem()
+        if not name:
+            return "Error: No algorithm selected."
+
+        snippet = self._extender.snippet_manager.get_snippet(str(name))
+        if not snippet:
+            return "Error: Snippet '%s' not found." % name
+
+        try:
+            body_str = self._bodyArea.getText().strip()
+            payload = json.loads(body_str)
+            passcode = self._passcodeField.getText()
+            api_key = self._apiKeyField.getText()
+
+            keys_str = self._keysField.getText().strip()
+            key_order = None
+            if keys_str:
+                key_order = [k.strip() for k in keys_str.split(',') if k.strip()]
+
+            return CryptoEngine.execute_snippet(
+                snippet["code"], payload, passcode, api_key, key_order
+            )
+        except ValueError:
+            return "Error: Invalid JSON body"
+        except Exception as e:
+            return "Error: %s" % str(e)
+
+    def _tryExtractKeys(self):
+        """Auto-extract keys from JSON body."""
+        try:
+            body_str = self._bodyArea.getText().strip()
+            if not body_str:
+                return
+            data = json.loads(body_str)
+            if isinstance(data, dict):
+                keys = [k for k in data.keys() if k != 'hash']
+                new_keys_str = ", ".join(keys)
+                current = self._keysField.getText().strip()
+                if current != new_keys_str:
+                    self._keysField.setText(new_keys_str)
+        except:
+            pass
+
+    def _tryFormatJson(self):
+        """Auto-format JSON on focus lost."""
+        try:
+            body_str = self._bodyArea.getText().strip()
+            if not body_str:
+                return
+            data = json.loads(body_str)
+            formatted = json.dumps(data, indent=2)
+            if formatted != body_str:
+                self._bodyArea.setText(formatted)
+        except:
+            pass
+
+
+# =============================================================================
 # Burp Suite Extension Entry Point
 # =============================================================================
-class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
+class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFactory):
 
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
@@ -197,26 +597,25 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         sys.stdout = callbacks.getStdout()
         sys.stderr = callbacks.getStderr()
 
-        # Snippet manager — snippets.json lives next to extension file
-        # Note: __file__ is not available in Jython when loaded by Burp,
-        # so we use the Burp API to get the extension's file path.
+        # Snippet manager
         ext_file = callbacks.getExtensionFilename()
         script_dir = os.path.dirname(os.path.abspath(ext_file))
         snippets_path = os.path.join(script_dir, "snippets.json")
         self.snippet_manager = SnippetManager(snippets_path)
 
-        # Build UI synchronously on the Swing EDT — MUST complete before
-        # addSuiteTab, because Burp calls getUiComponent() immediately.
+        # Build main tab UI synchronously
         SwingUtilities.invokeAndWait(self._buildUI)
 
-        # Register context menu
+        # Register all factories
         callbacks.registerContextMenuFactory(self)
+        callbacks.registerMessageEditorTabFactory(self)
 
-        # Register the custom tab (safe now — _mainPanel exists)
+        # Register the main HashGen tab
         callbacks.addSuiteTab(self)
 
         print("[+] HashGen extension loaded successfully")
         print("[*] Snippets file: %s" % snippets_path)
+        print("[*] HashGen tab added to request editor views")
 
     # -------------------------------------------------------------------------
     # ITab implementation
@@ -228,6 +627,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         return self._mainPanel
 
     # -------------------------------------------------------------------------
+    # IMessageEditorTabFactory implementation
+    # -------------------------------------------------------------------------
+    def createNewInstance(self, controller, editable):
+        return HashGenEditorTab(self, controller, editable)
+
+    # -------------------------------------------------------------------------
     # IContextMenuFactory implementation
     # -------------------------------------------------------------------------
     def createMenuItems(self, invocation):
@@ -235,7 +640,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         menu_items = []
 
         ctx = invocation.getInvocationContext()
-        # Show menu item for requests in various Burp tools
         valid_contexts = [
             IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_REQUEST,
             IContextMenuInvocation.CONTEXT_MESSAGE_VIEWER_REQUEST,
@@ -263,7 +667,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                 body_str = self._helpers.bytesToString(body_bytes)
 
                 if body_str and body_str.strip():
-                    # Try to pretty-print if JSON
                     try:
                         parsed = json.loads(body_str)
                         body_str = json.dumps(parsed, indent=2)
@@ -280,13 +683,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                         if idx >= 0:
                             parent.setSelectedIndex(idx)
 
-                    # Switch to Generator sub-tab
                     self._tabbedPane.setSelectedIndex(0)
-
                     print("[*] Request body sent to HashGen Generator")
 
     # -------------------------------------------------------------------------
-    # Build the UI
+    # Build the Main Tab UI
     # -------------------------------------------------------------------------
     def _buildUI(self):
         self._mainPanel = JPanel(BorderLayout())
@@ -307,7 +708,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self._tabbedPane = JTabbedPane()
         self._mainPanel.add(self._tabbedPane, BorderLayout.CENTER)
 
-        # Build tabs
         generatorPanel = self._buildGeneratorTab()
         editorPanel = self._buildEditorTab()
 
@@ -406,11 +806,9 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self._payloadArea.setWrapStyleWord(True)
         self._payloadArea.setText('{\n  "username": "user",\n  "request_time": "20260101010101"\n}')
 
-        # Document listener for auto-extract keys
         self._payloadArea.getDocument().addDocumentListener(
             PayloadDocumentListener(self._tryExtractKeys)
         )
-        # Focus listener for auto-format JSON
         self._payloadArea.addFocusListener(
             PayloadFocusListener(self._tryFormatJson)
         )
@@ -454,7 +852,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         )
         rightPanel.add(outputScroll, gbc)
 
-        # Combine left + right with a split pane
+        # Combine left + right
         splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
         splitPane.setDividerLocation(320)
         splitPane.setResizeWeight(0.0)
@@ -532,7 +930,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         return panel
 
     # -------------------------------------------------------------------------
-    # UI Helper: create a styled label
+    # UI Helper
     # -------------------------------------------------------------------------
     def _createLabel(self, text):
         label = JLabel(text)

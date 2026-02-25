@@ -1,5 +1,5 @@
 {
-  "ABA HMAC SHA256": {
+  "ABA Merchant Web App": {
     "code": "def generate(payload, passcode, api_key=\"\", key_order=None):\n    import hmac\n    import hashlib\n\n    # 1. Parse Passcode\n    if len(passcode) < 16:\n        raise ValueError(\"PassCode must be at least 16 characters long.\")\n    iv = passcode[-16:]\n    key = passcode[:-16]\n\n    # 2. Concat API Key\n    concat_str = api_key if api_key else \"\"\n\n    # 3. Determine Keys to Sign\n    keys_to_sign = []\n    if key_order:\n        # If explicit order provided, use it\n        keys_to_sign = key_order\n    else:\n        # Default: all keys except 'hash' and special meta keys\n        keys_to_sign = [k for k in payload.keys() if k != 'hash' and k != '__keys_order__']\n\n    # 4. Concat Payload Values\n    for k in keys_to_sign:\n        val = payload.get(k)\n        if val is None: val = \"\"\n        concat_str += str(val)\n\n    # 5. Create Message\n    message = iv + concat_str\n\n    # 6. Sign\n    signature = hmac.new(\n        key.encode('utf-8'), \n        message.encode('utf-8'), \n        hashlib.sha256\n    ).hexdigest()\n    \n    return signature",
     "description": "Original ABA HMAC-SHA256 Implementation"
   }
