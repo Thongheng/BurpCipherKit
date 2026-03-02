@@ -125,6 +125,220 @@ class SnippetManager:
         self.save_snippets()
 
 
+
+# =============================================================================
+# Body Parser Utilities — JSON / URL-encoded / multipart/form-data
+# =============================================================================
+def _get_boundary(content_type):
+    """Extract the multipart boundary from a Content-Type header value."""
+    if not content_type:
+        return None
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("boundary="):
+            return part[len("boundary="):].strip().strip('"')
+    return None
+
+
+def _auto_detect_boundary(body_str):
+    """Extract boundary from the first non-empty line of a multipart body.
+    The first line is always '--<boundary>', so we strip the leading '--'.
+    """
+    for line in body_str.splitlines():
+        line = line.strip()
+        if line.startswith("--") and len(line) > 2:
+            return line[2:]  # Strip the leading '--' prefix
+    return None
+
+
+def _try_parse_json(body_str):
+    try:
+        result = json.loads(body_str)
+        if isinstance(result, dict):
+            return result
+    except:
+        pass
+    return None
+
+
+def _try_parse_urlencoded(body_str):
+    """Parse application/x-www-form-urlencoded body. Jython-safe."""
+    try:
+        stripped = body_str.strip()
+        # Reject multipart bodies (they start with --boundary)
+        if stripped.startswith("--"):
+            return None
+        result = {}
+        for pair in stripped.split("&"):
+            pair = pair.strip()
+            if not pair:
+                continue
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+            else:
+                k, v = pair, ""
+            # Manual URL decode — do not rely on urllib in Jython
+            k = k.replace("+", " ").replace("%3D", "=").replace("%26", "&")
+            v = v.replace("+", " ").replace("%3D", "=").replace("%26", "&")
+            if k:
+                result[k] = v
+        # Only return if we found key=value pairs (not a JSON-looking string)
+        if result and not stripped.startswith("{"):
+            return result
+    except:
+        pass
+    return None
+
+
+def _try_parse_multipart(body_str, content_type):
+    """Parse multipart/form-data body using a line-by-line state machine."""
+    # Try to get boundary from Content-Type header first, then auto-detect from body
+    boundary = _get_boundary(content_type)
+    if not boundary:
+        boundary = _auto_detect_boundary(body_str)
+    if not boundary:
+        return None
+    try:
+        result = {}
+        delimiter     = "--" + boundary       # e.g. ------geckoform...
+        delimiter_end = "--" + boundary + "--" # final boundary
+
+        # Normalise line endings and split into lines
+        lines = body_str.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+        # States: 'seek' -> looking for boundary, 'headers' -> reading part headers,
+        #         'value' -> reading part value
+        state       = "seek"
+        current_name  = None
+        value_lines   = []
+        in_header_block = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            if state == "seek":
+                if stripped == delimiter or stripped == delimiter_end:
+                    state = "headers"
+                    current_name = None
+                    value_lines  = []
+                    in_header_block = True
+                continue
+
+            if state == "headers":
+                if stripped == "":
+                    # Blank line marks end of headers, start of value
+                    state = "value"
+                else:
+                    lower = stripped.lower()
+                    if "content-disposition" in lower and "name=" in lower:
+                        for seg in stripped.split(";"):
+                            seg = seg.strip()
+                            if seg.lower().startswith("name="):
+                                current_name = seg[5:].strip().strip('"\'')
+                continue
+
+            if state == "value":
+                if stripped == delimiter or stripped == delimiter_end:
+                    # Save current field
+                    if current_name is not None:
+                        result[current_name] = "\n".join(value_lines).rstrip("\r\n ")
+                    # Reset for next part
+                    current_name = None
+                    value_lines  = []
+                    if stripped == delimiter_end:
+                        state = "seek"  # done
+                    else:
+                        state = "headers"
+                else:
+                    value_lines.append(line)
+
+        # Flush any trailing field (malformed final boundary)
+        if state == "value" and current_name is not None:
+            result[current_name] = "\n".join(value_lines).rstrip("\r\n ")
+
+        if result:
+            return result
+    except Exception:
+        pass
+    return None
+
+
+
+def parse_body(body_str, content_type=""):
+    """
+    Parse an HTTP request body into a dict.
+    Supports: application/json, application/x-www-form-urlencoded, multipart/form-data.
+    Tries all strategies; content_type just controls priority.
+    Returns {} if nothing works.
+    """
+    if not body_str or not body_str.strip():
+        return {}
+
+    ct = (content_type or "").lower().split(";")[0].strip()
+
+    # Decide priority order based on declared Content-Type
+    if ct == "application/x-www-form-urlencoded":
+        strategies = [_try_parse_urlencoded, _try_parse_json,
+                      lambda b: _try_parse_multipart(b, content_type)]
+    elif ct == "multipart/form-data":
+        strategies = [lambda b: _try_parse_multipart(b, content_type),
+                      _try_parse_json, _try_parse_urlencoded]
+    else:
+        # JSON first (default), then try others as fallback
+        strategies = [_try_parse_json, _try_parse_urlencoded,
+                      lambda b: _try_parse_multipart(b, content_type)]
+
+    for strategy in strategies:
+        try:
+            result = strategy(body_str)
+            if result:
+                return result
+        except:
+            pass
+
+    return {}
+
+
+def serialize_body(updated_data, original_body, content_type=""):
+    """
+    Re-encode updated_data back to the same format as the original body.
+    Used by Gen & Inject to write the hash back without changing the format.
+    """
+    ct = (content_type or "").lower().split(";")[0].strip()
+
+    if ct == "application/x-www-form-urlencoded":
+        try:
+            return "&".join(
+                "{}={}".format(str(k), str(v))
+                for k, v in updated_data.items()
+            )
+        except:
+            pass
+
+    if ct == "multipart/form-data":
+        boundary = _get_boundary(content_type)
+        if boundary:
+            try:
+                parts = []
+                for k, v in updated_data.items():
+                    parts.append("--" + boundary)
+                    parts.append('Content-Disposition: form-data; name="{}"'.format(k))
+                    parts.append("")
+                    parts.append(str(v))
+                parts.append("--" + boundary + "--")
+                parts.append("")
+                return "\r\n".join(parts)
+            except:
+                pass
+
+    # JSON fallback
+    try:
+        return json.dumps(updated_data, indent=2)
+    except:
+        return original_body
+
+
+
 # =============================================================================
 # Core Logic: Crypto Engine
 # =============================================================================
@@ -137,6 +351,7 @@ class CryptoEngine:
         The merge_payload is built by combining custom_data + payload so that
         key_order can reference both custom data keys and payload keys.
         Backward compat: if snippet uses old `api_key` str param, first value is passed.
+        If a snippet returns a tuple (hash_str, debug_log), the debug_log is shown in the UI.
         """
         local_scope = {}
         global_scope = {
@@ -166,17 +381,23 @@ class CryptoEngine:
 
             # Try new signature: (payload, passcode, custom_data_dict, key_order)
             try:
-                return generate_func(merged, passcode, custom_data, key_order)
+                res = generate_func(merged, passcode, custom_data, key_order)
             except TypeError as te:
                 err_msg = str(te)
                 if "argument" in err_msg:
                     # Fallback for old snippets using api_key (single string)
                     api_key = list(custom_data.values())[0] if custom_data else ""
                     try:
-                        return generate_func(merged, passcode, api_key, key_order)
+                        res = generate_func(merged, passcode, api_key, key_order)
                     except TypeError:
-                        return generate_func(merged, passcode, api_key)
-                raise te
+                        res = generate_func(merged, passcode, api_key)
+                else:
+                    raise te
+            
+            # Unpack if snippet returns a debug log tuple
+            if isinstance(res, tuple) and len(res) == 2:
+                return res[0], res[1]
+            return res, ""
 
         except Exception as e:
             return "Error: %s\n%s" % (str(e), traceback.format_exc())
@@ -507,7 +728,7 @@ class HashGenEditorTab(IMessageEditorTab):
         gbc.gridx = 0
         gbc.weightx = 0
         gbc.fill = GridBagConstraints.NONE
-        lbl = JLabel("PassCode:")
+        lbl = JLabel("Secret:")
         lbl.setFont(labelFont)
         configPanel.add(lbl, gbc)
 
@@ -686,6 +907,7 @@ class HashGenEditorTab(IMessageEditorTab):
             self._bodyArea.setText("")
             self._currentMessage = None
             self._headerBytes = None
+            self._contentType = ""
             return
 
         self._currentMessage = content
@@ -694,9 +916,16 @@ class HashGenEditorTab(IMessageEditorTab):
 
         self._headerBytes = content[:bodyOffset]
 
+        # Extract Content-Type from headers for body parsing
+        self._contentType = ""
+        for h in analyzed.getHeaders():
+            if h.lower().startswith("content-type:"):
+                self._contentType = h[len("content-type:"):].strip()
+                break
+
         body = self._helpers.bytesToString(content[bodyOffset:])
 
-        # Try to pretty-print JSON
+        # Pretty-print JSON only; leave form-data as-is
         try:
             parsed = json.loads(body)
             body = json.dumps(parsed, indent=2)
@@ -755,21 +984,21 @@ class HashGenEditorTab(IMessageEditorTab):
     # --- Actions ---
 
     def _onGenerate(self, event=None):
-        result = self._computeHash()
+        result, debug_log = self._computeHash()
         self._hashOutput.setText(str(result))
 
     def _onGenerateAndInject(self, event=None):
-        result = self._computeHash()
+        result, debug_log = self._computeHash()
         if result and not str(result).startswith("Error"):
             self._hashOutput.setText(str(result))
             body_str = self._bodyArea.getText().strip()
             try:
-                data = json.loads(body_str)
-                field_name = self._hashFieldName.getText().strip()
-                if not field_name:
-                    field_name = "hash"
+                ct = getattr(self, '_contentType', '')
+                data = parse_body(body_str, ct)
+                field_name = self._hashFieldName.getText().strip() or "hash"
                 data[field_name] = str(result)
-                self._bodyArea.setText(json.dumps(data, indent=2))
+                serialized = serialize_body(data, body_str, ct)
+                self._bodyArea.setText(serialized)
                 self._bodyArea.setCaretPosition(0)
             except Exception as e:
                 self._hashOutput.setText("Error injecting hash: %s" % str(e))
@@ -779,15 +1008,18 @@ class HashGenEditorTab(IMessageEditorTab):
     def _computeHash(self):
         name = self._algoCombo.getSelectedItem()
         if not name:
-            return "Error: No algorithm selected."
+            return "Error: No algorithm selected.", ""
 
         snippet = self._extender.snippet_manager.get_snippet(str(name))
         if not snippet:
-            return "Error: Snippet '%s' not found." % name
+            return "Error: Snippet '%s' not found." % name, ""
 
         try:
             body_str = self._bodyArea.getText().strip()
-            payload = json.loads(body_str)
+            ct = getattr(self, '_contentType', '')
+            payload = parse_body(body_str, ct)
+            if not payload:
+                return "Error: Body could not be parsed or is empty.", ""
             passcode = self._passcodeField.getText()
             custom_data = self._customDataPanel.getPairs()
 
@@ -799,30 +1031,30 @@ class HashGenEditorTab(IMessageEditorTab):
             return CryptoEngine.execute_snippet(
                 snippet["code"], payload, passcode, custom_data, key_order
             )
-        except ValueError:
-            return "Error: Invalid JSON body"
         except Exception as e:
-            return "Error: %s" % str(e)
+            return "Error: %s" % str(e), traceback.format_exc()
 
     def _tryExtractKeys(self):
-        """Auto-extract keys from JSON body. Only if user hasn't manually edited."""
+        """Auto-extract keys from body (any format). Only if user hasn't manually edited."""
         try:
             body_str = self._bodyArea.getText().strip()
             if not body_str:
                 return
-            data = json.loads(body_str)
-            if isinstance(data, dict):
+            ct = getattr(self, '_contentType', '')
+            data = parse_body(body_str, ct)
+            if isinstance(data, dict) and data:
                 keys = [k for k in data.keys() if k != 'hash']
                 new_keys_str = ", ".join(keys)
                 current = self._keysField.getText().strip()
                 if current != new_keys_str:
-                    self._keysUserEdited = False  # Reset flag during programmatic set
+                    self._keysUserEdited = False
                     self._keysField.setText(new_keys_str)
-                    self._keysUserEdited = False  # Ensure it stays false
+                    self._keysUserEdited = False
         except:
             pass
 
     def _tryFormatJson(self):
+        """Pretty-print body only when it is valid JSON."""
         try:
             body_str = self._bodyArea.getText().strip()
             if not body_str:
@@ -1012,7 +1244,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         # PassCode
         lgbc.gridy = 2
         lgbc.insets = Insets(10, 4, 3, 4)
-        lbl = JLabel("PassCode (Key+IV):")
+        lbl = JLabel("Secret:")
         lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
@@ -1052,8 +1284,37 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._keysOrderField.setFont(fieldFont)
         leftPanel.add(self._keysOrderField, lgbc)
 
-        # Generate button
+        # Body Format
         lgbc.gridy = 8
+        lgbc.insets = Insets(10, 4, 3, 4)
+        lgbc.anchor = GridBagConstraints.WEST
+        lbl = JLabel("Body Format:")
+        lbl.setFont(labelFont)
+        leftPanel.add(lbl, lgbc)
+
+        lgbc.gridy = 9
+        lgbc.insets = Insets(3, 4, 3, 4)
+        self._bodyFormatCombo = JComboBox(["JSON", "URL-encoded", "multipart/form-data"])
+        self._bodyFormatCombo.setFont(fieldFont)
+        leftPanel.add(self._bodyFormatCombo, lgbc)
+
+        # Boundary (only relevant for multipart)
+        lgbc.gridy = 10
+        lgbc.insets = Insets(6, 4, 3, 4)
+        lgbc.anchor = GridBagConstraints.WEST
+        lbl = JLabel("Boundary (multipart only):")
+        lbl.setFont(labelFont)
+        leftPanel.add(lbl, lgbc)
+
+        lgbc.gridy = 11
+        lgbc.insets = Insets(3, 4, 3, 4)
+        self._boundaryField = JTextField()
+        self._boundaryField.setFont(fieldFont)
+        self._boundaryField.setToolTipText("Paste the boundary value from Content-Type header (without leading --)")
+        leftPanel.add(self._boundaryField, lgbc)
+
+        # Generate button
+        lgbc.gridy = 12
         lgbc.insets = Insets(20, 4, 4, 4)
         lgbc.anchor = GridBagConstraints.NORTHWEST
         self._generateBtn = JButton("Generate Hash", actionPerformed=self._onGenerate)
@@ -1061,10 +1322,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         leftPanel.add(self._generateBtn, lgbc)
 
         # Spacer to push everything to the top
-        lgbc.gridy = 9
+        lgbc.gridy = 13
         lgbc.weighty = 1.0
         lgbc.insets = Insets(0, 0, 0, 0)
         leftPanel.add(JPanel(), lgbc)  # empty filler
+
 
         # --- Right side: text areas ---
         rightPanel = JPanel(GridBagLayout())
@@ -1078,7 +1340,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         # Payload label
         gbc.gridy = 0
         gbc.weighty = 0
-        payloadLabel = self._createLabel("JSON Payload:")
+        payloadLabel = self._createLabel("Payload:")
         rightPanel.add(payloadLabel, gbc)
 
         # Payload text area
@@ -1113,15 +1375,15 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         gbc.gridy = 2
         gbc.weighty = 0
         gbc.fill = GridBagConstraints.HORIZONTAL
-        outputLabel = self._createLabel("Output:")
+        outputLabel = self._createLabel("Output Result:")
         rightPanel.add(outputLabel, gbc)
 
         # Output text area
         gbc.gridy = 3
-        gbc.weighty = 0.6
+        gbc.weighty = 0.2
         gbc.fill = GridBagConstraints.BOTH
-        self._outputArea = JTextArea(6, 40)
-        self._outputArea.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._outputArea = JTextArea(3, 40)
+        self._outputArea.setFont(Font("Monospaced", Font.BOLD, 14))
         self._outputArea.setLineWrap(True)
         self._outputArea.setWrapStyleWord(True)
         self._outputArea.setEditable(False)
@@ -1130,12 +1392,41 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         outputScroll.setBorder(
             BorderFactory.createTitledBorder(
                 BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Result ",
+                " Result Hash ",
                 TitledBorder.LEFT, TitledBorder.TOP,
                 Font("SansSerif", Font.PLAIN, 11)
             )
         )
         rightPanel.add(outputScroll, gbc)
+
+        # Debug Label
+        gbc.gridy = 4
+        gbc.weighty = 0
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        debugLabel = self._createLabel("Debug Output:")
+        rightPanel.add(debugLabel, gbc)
+
+        # Debug text area
+        gbc.gridy = 5
+        gbc.weighty = 0.6
+        gbc.fill = GridBagConstraints.BOTH
+        self._debugArea = JTextArea(6, 40)
+        self._debugArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._debugArea.setForeground(Color(40, 40, 40))
+        self._debugArea.setLineWrap(True)
+        self._debugArea.setWrapStyleWord(True)
+        self._debugArea.setEditable(False)
+
+        debugScroll = JScrollPane(self._debugArea)
+        debugScroll.setBorder(
+            BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(Color(80, 80, 80)),
+                " Debug Log ",
+                TitledBorder.LEFT, TitledBorder.TOP,
+                Font("SansSerif", Font.PLAIN, 11)
+            )
+        )
+        rightPanel.add(debugScroll, gbc)
 
         # Combine left + right
         splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
@@ -1194,8 +1485,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             '    # payload = merged dict of Custom Data fields + request body JSON\n'
             '    # custom_data = dict {key_name: value} from Custom Data fields\n'
             '    # key_order = list of key names to sign (from Keys Order field)\n'
-            '    # Example: access api_key value via payload["api_key"]\n'
-            '    return "hash_result"'
+            '    \n'
+            '    debug_log = "--- Debug Info ---\\n"\n'
+            '    debug_log += "Keys received: " + str(list(payload.keys())) + "\\n"\n'
+            '    \n'
+            '    # You can return just the hash string, OR a tuple (hash, debug_output)\n'
+            '    return "hash_result", debug_log'
         )
         self._codeArea.setText(default_template)
 
@@ -1232,16 +1527,36 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         name = self._algoCombo.getSelectedItem()
         if not name:
             self._outputArea.setText("Error: No algorithm selected.")
+            self._debugArea.setText("")
             return
 
         snippet = self.snippet_manager.get_snippet(str(name))
         if not snippet:
             self._outputArea.setText("Error: Snippet '%s' not found." % name)
+            self._debugArea.setText("")
             return
 
         try:
             payload_str = self._payloadArea.getText().strip()
-            payload = json.loads(payload_str)
+
+            # Build content_type from user-selected format + boundary
+            fmt = str(self._bodyFormatCombo.getSelectedItem())
+            if fmt == "multipart/form-data":
+                boundary = self._boundaryField.getText().strip()
+                if boundary:
+                    content_type = "multipart/form-data; boundary=" + boundary
+                else:
+                    content_type = "multipart/form-data"
+            elif fmt == "URL-encoded":
+                content_type = "application/x-www-form-urlencoded"
+            else:
+                content_type = "application/json"
+
+            payload = parse_body(payload_str, content_type)
+            if not payload:
+                self._outputArea.setText("Error: Payload could not be parsed or is empty.")
+                self._debugArea.setText("")
+                return
             passcode = self._passcodeField.getText()
             custom_data = self._customDataPanel.getPairs()
 
@@ -1250,24 +1565,37 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             if keys_str:
                 key_order = [k.strip() for k in keys_str.split(',') if k.strip()]
 
-            result = CryptoEngine.execute_snippet(
+            result, debug_log = CryptoEngine.execute_snippet(
                 snippet["code"], payload, passcode, custom_data, key_order
             )
 
             self._outputArea.setText(str(result))
+            self._debugArea.setText(str(debug_log))
 
-        except ValueError as ve:
-            self._outputArea.setText("Error: Invalid JSON Payload\n%s" % str(ve))
         except Exception as e:
             self._outputArea.setText("Error: %s" % str(e))
+            self._debugArea.setText(traceback.format_exc())
 
     def _tryExtractKeys(self):
+        """Auto-extract keys from payload using the selected body format."""
         try:
             payload_str = self._payloadArea.getText().strip()
             if not payload_str:
                 return
-            data = json.loads(payload_str)
-            if isinstance(data, dict):
+            # Use selected format if available
+            try:
+                fmt = str(self._bodyFormatCombo.getSelectedItem())
+                if fmt == "multipart/form-data":
+                    boundary = self._boundaryField.getText().strip()
+                    ct = "multipart/form-data; boundary=" + boundary if boundary else "multipart/form-data"
+                elif fmt == "URL-encoded":
+                    ct = "application/x-www-form-urlencoded"
+                else:
+                    ct = "application/json"
+            except:
+                ct = ""
+            data = parse_body(payload_str, ct)
+            if isinstance(data, dict) and data:
                 keys = [k for k in data.keys() if k != 'hash']
                 new_keys_str = ", ".join(keys)
                 current = self._keysOrderField.getText().strip()
