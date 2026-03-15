@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# HashGen - Burp Suite Extension
-# Converts the HashGen crypto tool into a Burp Suite extension.
+# CipherKit - Burp Suite Extension
+# Universal Hash & Crypto toolkit for Burp Suite.
 # Requires Jython configured in Burp Suite (Extender > Options > Python Environment).
 
 from burp import (
@@ -13,13 +13,18 @@ from javax.swing import (
     JScrollPane, JTabbedPane, JSplitPane, JOptionPane, BorderFactory,
     SwingUtilities, BoxLayout, Box
 )
-from javax.swing.border import EmptyBorder, TitledBorder
+from javax.swing.border import EmptyBorder, TitledBorder, AbstractBorder
 from java.awt import (
     BorderLayout, GridBagLayout, GridBagConstraints, Insets,
-    Font, Color, Dimension, FlowLayout, Component, GridLayout
+    Font, Color, Dimension, FlowLayout, Component, GridLayout,
+    RenderingHints
 )
 from java.awt.event import FocusAdapter
 from javax.swing.event import DocumentListener
+
+# Java crypto (always available in Burp's JVM -- no external deps needed)
+from javax.crypto import Cipher
+from javax.crypto.spec import SecretKeySpec, IvParameterSpec
 
 import json
 import os
@@ -47,7 +52,7 @@ class SnippetManager:
             with open(self.filepath, 'r') as f:
                 self.snippets = json.load(f)
         except Exception as e:
-            print("[HashGen] Error loading snippets: %s" % str(e))
+            print("[CipherKit] Error loading snippets: %s" % str(e))
             self.snippets = {}
 
     def save_snippets(self):
@@ -56,7 +61,7 @@ class SnippetManager:
                 json.dump(self.snippets, f, indent=2)
             return True
         except Exception as e:
-            print("[HashGen] Error saving snippets: %s" % str(e))
+            print("[CipherKit] Error saving snippets: %s" % str(e))
             return False
 
     def get_snippet(self, name):
@@ -127,7 +132,7 @@ class SnippetManager:
 
 
 # =============================================================================
-# Body Parser Utilities — JSON / URL-encoded / multipart/form-data
+# Body Parser Utilities -- JSON / URL-encoded / multipart/form-data
 # =============================================================================
 def _get_boundary(content_type):
     """Extract the multipart boundary from a Content-Type header value."""
@@ -177,7 +182,7 @@ def _try_parse_urlencoded(body_str):
                 k, v = pair.split("=", 1)
             else:
                 k, v = pair, ""
-            # Manual URL decode — do not rely on urllib in Jython
+            # Manual URL decode -- do not rely on urllib in Jython
             k = k.replace("+", " ").replace("%3D", "=").replace("%26", "&")
             v = v.replace("+", " ").replace("%3D", "=").replace("%26", "&")
             if k:
@@ -404,6 +409,249 @@ class CryptoEngine:
 
 
 # =============================================================================
+# AES-CBC-128 Encrypt / Decrypt Engine
+# Matches the JS crypto.subtle AES-CBC reference implementation:
+#   - Key and IV are UTF-8 encoded strings (16 bytes for AES-128)
+#   - If IV is blank/None, the KEY bytes are reused as IV (JS default behaviour)
+#   - Ciphertext is Base64 (matches btoa/atob in the JS sample)
+#   - Padding: PKCS5 (same as PKCS7, the browser default)
+# =============================================================================
+class AesCbcEngine:
+    ALGORITHM = "AES/CBC/PKCS5Padding"
+
+    @staticmethod
+    def _prepare(key_utf8, iv_utf8):
+        """Convert UTF-8 key and IV strings to Java byte arrays."""
+        key_bytes = key_utf8.encode("UTF-8")
+        if iv_utf8 and iv_utf8.strip():
+            iv_bytes = iv_utf8.encode("UTF-8")
+        else:
+            # JS default: if iv is empty/omitted, reuse the key bytes as IV
+            iv_bytes = key_bytes
+        # Validate lengths (AES-128 = 16 bytes)
+        if len(key_bytes) not in (16, 24, 32):
+            raise ValueError(
+                "Key must be 16, 24, or 32 UTF-8 bytes (got %d).\n"
+                "For AES-128 use a 16-character key (e.g. 'M@{n$vdXnJ)4F!>h')." % len(key_bytes)
+            )
+        if len(iv_bytes) != 16:
+            raise ValueError(
+                "IV must be exactly 16 UTF-8 bytes (got %d).\n"
+                "Leave blank to reuse the key as IV (matching JS default)." % len(iv_bytes)
+            )
+        return key_bytes, iv_bytes
+
+    @staticmethod
+    def encrypt(plaintext_str, key_utf8, iv_utf8=None):
+        """
+        Encrypt plaintext_str with AES-128-CBC, PKCS5 padding.
+        Returns Base64-encoded ciphertext string.
+        Matches: crypto.subtle.encrypt({name:'AES-CBC', iv:v}, K, encoded)
+        """
+        try:
+            key_bytes, iv_bytes = AesCbcEngine._prepare(key_utf8, iv_utf8 or "")
+            secret_key = SecretKeySpec(key_bytes, "AES")
+            iv_spec    = IvParameterSpec(iv_bytes)
+            cipher     = Cipher.getInstance(AesCbcEngine.ALGORITHM)
+            cipher.init(Cipher.ENCRYPT_MODE, secret_key, iv_spec)
+            plaintext_bytes = plaintext_str.encode("UTF-8")
+            encrypted_bytes = cipher.doFinal(plaintext_bytes)
+            return base64.b64encode(bytes(bytearray(encrypted_bytes)))
+        except Exception as e:
+            raise RuntimeError("AES-CBC encrypt failed: %s" % str(e))
+
+    @staticmethod
+    def decrypt(ciphertext_b64, key_utf8, iv_utf8=None):
+        """
+        Decrypt a Base64 ciphertext string with AES-128-CBC, PKCS5 padding.
+        Returns the original plaintext string.
+        Matches: crypto.subtle.decrypt({name:'AES-CBC', iv:v}, K, cipherBytes)
+        """
+        try:
+            key_bytes, iv_bytes = AesCbcEngine._prepare(key_utf8, iv_utf8 or "")
+            secret_key      = SecretKeySpec(key_bytes, "AES")
+            iv_spec         = IvParameterSpec(iv_bytes)
+            cipher          = Cipher.getInstance(AesCbcEngine.ALGORITHM)
+            cipher.init(Cipher.DECRYPT_MODE, secret_key, iv_spec)
+            # Accept both str and bytes for the base64 input
+            ciphertext_bytes = base64.b64decode(ciphertext_b64)
+            decrypted_bytes  = cipher.doFinal(ciphertext_bytes)
+            return bytearray(decrypted_bytes).decode("UTF-8")
+        except Exception as e:
+            raise RuntimeError("AES-CBC decrypt failed: %s" % str(e))
+
+
+
+# =============================================================================
+# Extensible Crypto Snippet System
+# Works exactly like the hash SnippetManager -- users add new algorithms by
+# adding entries to crypto_snippets.json with encrypt_code / decrypt_code.
+# =============================================================================
+class CryptoSnippetManager:
+    """
+    Manages crypto_snippets.json. Each entry has:
+      encrypt_code  : Python code defining encrypt(plaintext, key, iv) -> str
+      decrypt_code  : Python code defining decrypt(ciphertext_b64, key, iv) -> str
+      requires_key  : bool
+      requires_iv   : bool
+      description   : str
+    """
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.snippets = {}
+        self.load_snippets()
+
+    def load_snippets(self):
+        if not os.path.exists(self.filepath):
+            self.snippets = {}
+            return
+        try:
+            with open(self.filepath, 'r') as f:
+                self.snippets = json.load(f)
+        except Exception as e:
+            print("[CipherKit] Error loading crypto snippets: %s" % str(e))
+            self.snippets = {}
+
+    def save_snippets(self):
+        try:
+            with open(self.filepath, 'w') as f:
+                json.dump(self.snippets, f, indent=2)
+            return True
+        except Exception as e:
+            print("[CipherKit] Error saving crypto snippets: %s" % str(e))
+            return False
+
+    def get_snippet(self, name):
+        return self.snippets.get(name)
+
+    def get_all_names(self):
+        return list(self.snippets.keys())
+
+    def update_snippet(self, name, encrypt_code, decrypt_code,
+                       description="", requires_key=True, requires_iv=True):
+        self.snippets[name] = {
+            "encrypt_code": encrypt_code,
+            "decrypt_code": decrypt_code,
+            "description": description,
+            "requires_key": requires_key,
+            "requires_iv": requires_iv
+        }
+        self.save_snippets()
+
+    def delete_snippet(self, name):
+        if name in self.snippets:
+            del self.snippets[name]
+            self.save_snippets()
+
+    def requires_key(self, name):
+        s = self.snippets.get(name, {})
+        return s.get("requires_key", True)
+
+    def requires_iv(self, name):
+        s = self.snippets.get(name, {})
+        return s.get("requires_iv", True)
+
+
+class CryptoSnippetEngine:
+    """
+    Executes encrypt_code or decrypt_code from a crypto snippet.
+    Both functions receive (plaintext_or_ciphertext, key, iv) and return a string.
+    """
+
+    @staticmethod
+    def execute(snippet, mode, input_text, key, iv):
+        """
+        mode: 'Encrypt' or 'Decrypt'
+        Returns result string, or raises RuntimeError on failure.
+        """
+        local_scope  = {}
+        global_scope = {
+            "base64": base64,
+            "json":   json,
+            "time":   time,
+            # Expose javax.crypto for snippets that use the JVM directly
+            "Cipher":         Cipher,
+            "SecretKeySpec":  SecretKeySpec,
+            "IvParameterSpec": IvParameterSpec,
+        }
+        try:
+            if mode == "Encrypt":
+                code   = snippet.get("encrypt_code", "")
+                fn_key = "encrypt"
+            else:
+                code   = snippet.get("decrypt_code", "")
+                fn_key = "decrypt"
+
+            if not code:
+                raise ValueError("No %s_code found in crypto snippet." % fn_key)
+
+            exec(code, global_scope, local_scope)
+
+            if fn_key not in local_scope:
+                raise ValueError(
+                    "Crypto snippet must define a '%s(input, key, iv)' function." % fn_key
+                )
+
+            result = local_scope[fn_key](input_text, key, iv)
+            return str(result)
+
+        except Exception as e:
+            raise RuntimeError("%s failed: %s\n%s" % (
+                mode, str(e), traceback.format_exc()
+            ))
+
+
+# =============================================================================
+# UI Helper: Rounded Border for Swing components
+# =============================================================================
+class RoundedBorder(AbstractBorder):
+    """A rounded-corner border for JTextField / JScrollPane / JPanel."""
+
+    def __init__(self, radius=8, color=Color(180, 180, 180), thickness=1):
+        self._radius    = radius
+        self._color     = color
+        self._thickness = thickness
+
+    def paintBorder(self, c, g, x, y, w, h):
+        g2 = g.create()
+        g2.setRenderingHint(
+            RenderingHints.KEY_ANTIALIASING,
+            RenderingHints.VALUE_ANTIALIAS_ON
+        )
+        g2.setColor(self._color)
+        from java.awt import BasicStroke
+        g2.setStroke(BasicStroke(self._thickness))
+        g2.drawRoundRect(
+            x + self._thickness // 2,
+            y + self._thickness // 2,
+            w - self._thickness,
+            h - self._thickness,
+            self._radius, self._radius
+        )
+        g2.dispose()
+
+    def getBorderInsets(self, c, insets=None):
+        pad = self._radius // 2 + 2
+        if insets is not None:
+            insets.top = pad; insets.left = pad
+            insets.bottom = pad; insets.right = pad
+            return insets
+        return Insets(pad, pad, pad, pad)
+
+    def isBorderOpaque(self):
+        return False
+
+
+def _roundedCompound(radius=8, padding=4, color=Color(180, 180, 180)):
+    """Convenience: RoundedBorder + inner EmptyBorder padding."""
+    return BorderFactory.createCompoundBorder(
+        RoundedBorder(radius, color),
+        EmptyBorder(padding, padding, padding, padding)
+    )
+
+
+# =============================================================================
 # UI Helper: Custom Data Fields Manager (key:value rows)
 # =============================================================================
 class CustomDataPanel(JPanel):
@@ -416,8 +664,8 @@ class CustomDataPanel(JPanel):
     def __init__(self, label_font=None, field_font=None):
         JPanel.__init__(self)
         self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
-        self._label_font = label_font or Font("SansSerif", Font.BOLD, 12)
-        self._field_font = field_font or Font("SansSerif", Font.PLAIN, 12)
+        self._label_font = label_font  # None = inherit LaF
+        self._field_font = field_font  # None = inherit LaF
         self._rows = []  # list of (key_field, value_field)
         self._addFieldRow()
 
@@ -428,18 +676,15 @@ class CustomDataPanel(JPanel):
 
         # Key field (narrower, fixed ~90px)
         keyField = JTextField(key)
-        keyField.setFont(self._field_font)
         keyField.setPreferredSize(Dimension(90, 26))
         keyField.setToolTipText("Key name (use in Keys Order)")
 
         # Separator label
         sep = JLabel(":")
-        sep.setFont(self._label_font)
         sep.setBorder(EmptyBorder(0, 4, 0, 4))
 
         # Value field (stretches)
         valueField = JTextField(value)
-        valueField.setFont(self._field_font)
 
         # Left part: key + colon + value
         kvPanel = JPanel(BorderLayout(0, 0))
@@ -455,14 +700,12 @@ class CustomDataPanel(JPanel):
 
         btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
         addBtn = JButton("+")
-        addBtn.setFont(Font("SansSerif", Font.BOLD, 11))
         addBtn.setPreferredSize(Dimension(32, 24))
         addBtn.setToolTipText("Add another custom data field")
         addBtn.addActionListener(lambda e: self._onAdd())
         btnPanel.add(addBtn)
 
         removeBtn = JButton("-")
-        removeBtn.setFont(Font("SansSerif", Font.BOLD, 11))
         removeBtn.setPreferredSize(Dimension(32, 24))
         removeBtn.setToolTipText("Remove this field")
         removeBtn.addActionListener(lambda e, r=row, kf=keyField, vf=valueField: self._onRemove(r, kf, vf))
@@ -537,7 +780,7 @@ class CompactCustomDataPanel(JPanel):
     def __init__(self, font=None):
         JPanel.__init__(self)
         self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
-        self._font = font or Font("SansSerif", Font.PLAIN, 11)
+        self._font = font  # None = inherit default LaF font
         self._rows = []
         self._addFieldRow()
 
@@ -547,32 +790,32 @@ class CompactCustomDataPanel(JPanel):
         row.setAlignmentX(Component.LEFT_ALIGNMENT)
 
         keyField = JTextField(key)
-        keyField.setFont(self._font)
         keyField.setPreferredSize(Dimension(70, 20))
         keyField.setToolTipText("Key name (use in Keys Order)")
 
         sep = JLabel(":")
-        sep.setFont(self._font)
         sep.setBorder(EmptyBorder(0, 2, 0, 2))
 
         valueField = JTextField(value)
-        valueField.setFont(self._font)
+
+        # key | ":" in a fixed-width panel, value takes the rest
+        keyWithSep = JPanel(BorderLayout(0, 0))
+        keyWithSep.add(keyField, BorderLayout.CENTER)
+        keyWithSep.add(sep, BorderLayout.EAST)
+        keyWithSep.setPreferredSize(Dimension(80, 20))
 
         kvPanel = JPanel(BorderLayout(2, 0))
-        kvPanel.add(keyField, BorderLayout.WEST)
-        kvPanel.add(sep, BorderLayout.CENTER)
+        kvPanel.add(keyWithSep, BorderLayout.WEST)
         kvPanel.add(valueField, BorderLayout.CENTER)
         row.add(kvPanel, BorderLayout.CENTER)
 
         btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 1, 0))
         addBtn = JButton("+")
-        addBtn.setFont(Font("SansSerif", Font.BOLD, 10))
         addBtn.setPreferredSize(Dimension(26, 20))
         addBtn.addActionListener(lambda e: self._onAdd())
         btnPanel.add(addBtn)
 
         removeBtn = JButton("-")
-        removeBtn.setFont(Font("SansSerif", Font.BOLD, 10))
         removeBtn.setPreferredSize(Dimension(26, 20))
         removeBtn.addActionListener(lambda e, r=row, kf=keyField, vf=valueField: self._onRemove(r, kf, vf))
         btnPanel.add(removeBtn)
@@ -667,192 +910,199 @@ class PayloadDocumentListener(DocumentListener):
 class HashGenEditorTab(IMessageEditorTab):
     """
     Appears as a tab alongside Pretty/Raw/Hex in the request viewer.
-    Optimized for inline editing: shows the request body with config controls
-    to generate and inject the hash directly into the JSON body.
+    Two sub-tabs (Hash / Crypto) let users switch config view;
+    both are always active and work simultaneously.
     """
 
     def __init__(self, extender, controller, editable):
         self._extender = extender
-        self._helpers = extender._helpers
+        self._helpers  = extender._helpers
         self._editable = editable
         self._currentMessage = None
-        self._headerBytes = None
-        self._keysUserEdited = False  # Track if user manually edited keys
+        self._headerBytes    = None
+        self._contentType    = ""
+        self._keysUserEdited = False
 
-        # Build the compact inline UI
+        # Fonts
+        monoFont  = Font("Monospaced", Font.PLAIN, 12)
+
+        # ---- Root panel ----
         self._panel = JPanel(BorderLayout(3, 3))
         self._panel.setBorder(EmptyBorder(4, 4, 4, 4))
 
-        # --- Top config bar: responsive 2-column vertical form ---
-        configPanel = JPanel(GridBagLayout())
-        configPanel.setBorder(
-            BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder(
-                    BorderFactory.createLineBorder(Color(80, 80, 80)),
-                    " HashGen Config ",
-                    TitledBorder.LEFT, TitledBorder.TOP,
-                    Font("SansSerif", Font.BOLD, 11)
-                ),
-                EmptyBorder(3, 5, 3, 5)
-            )
-        )
+        # ================================================================
+        # TOP: compact JTabbedPane with Hash sub-tab and Crypto sub-tab
+        # ================================================================
+        configTabs = JTabbedPane(JTabbedPane.TOP)
 
-        gbc = GridBagConstraints()
-        gbc.insets = Insets(1, 3, 1, 3)
-        gbc.anchor = GridBagConstraints.WEST
-        smallFont = Font("SansSerif", Font.PLAIN, 11)
-        labelFont = Font("SansSerif", Font.BOLD, 11)
+        # ----------------------------------------------------------------
+        # Hash sub-tab panel
+        # ----------------------------------------------------------------
+        hashConfigPanel = JPanel(GridBagLayout())
+        hashConfigPanel.setBorder(EmptyBorder(4, 5, 4, 5))
+
+        hgbc = GridBagConstraints()
+        hgbc.insets  = Insets(1, 3, 1, 3)
+        hgbc.anchor  = GridBagConstraints.WEST
 
         names = extender.snippet_manager.get_all_names()
         if not names:
             names = ["Default"]
 
         # Row 0: Algorithm
-        gbc.gridy = 0
-        gbc.gridx = 0
-        gbc.weightx = 0
-        gbc.fill = GridBagConstraints.NONE
-        lbl = JLabel("Algorithm:")
-        lbl.setFont(labelFont)
-        configPanel.add(lbl, gbc)
-
-        gbc.gridx = 1
-        gbc.weightx = 1.0
-        gbc.fill = GridBagConstraints.HORIZONTAL
+        hgbc.gridy = 0; hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
+        hashConfigPanel.add(JLabel("Algorithm:"), hgbc)
+        hgbc.gridx = 1; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
         self._algoCombo = JComboBox(names)
-        self._algoCombo.setFont(smallFont)
-        configPanel.add(self._algoCombo, gbc)
+        self._algoCombo.addActionListener(lambda e: self._updateInlinePasscodeState())
+        hashConfigPanel.add(self._algoCombo, hgbc)
 
-        # Row 1: PassCode
-        gbc.gridy = 1
-        gbc.gridx = 0
-        gbc.weightx = 0
-        gbc.fill = GridBagConstraints.NONE
-        lbl = JLabel("Secret:")
-        lbl.setFont(labelFont)
-        configPanel.add(lbl, gbc)
-
-        gbc.gridx = 1
-        gbc.weightx = 1.0
-        gbc.fill = GridBagConstraints.HORIZONTAL
+        # Row 1: Secret
+        hgbc.gridy = 1; hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
+        self._passcodeLbl = JLabel("Secret:")
+        hashConfigPanel.add(self._passcodeLbl, hgbc)
+        hgbc.gridx = 1; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
         self._passcodeField = JTextField()
-        self._passcodeField.setFont(smallFont)
-        configPanel.add(self._passcodeField, gbc)
+        hashConfigPanel.add(self._passcodeField, hgbc)
 
         # Row 2: Custom Data
-        gbc.gridy = 2
-        gbc.gridx = 0
-        gbc.weightx = 0
-        gbc.fill = GridBagConstraints.NONE
-        gbc.anchor = GridBagConstraints.NORTHWEST
-        lbl = JLabel("Custom Data:")
-        lbl.setFont(labelFont)
-        configPanel.add(lbl, gbc)
-
-        gbc.gridx = 1
-        gbc.weightx = 1.0
-        gbc.fill = GridBagConstraints.HORIZONTAL
-        gbc.anchor = GridBagConstraints.WEST
-        self._customDataPanel = CompactCustomDataPanel(font=smallFont)
-        configPanel.add(self._customDataPanel, gbc)
+        hgbc.gridy = 2; hgbc.gridx = 0; hgbc.weightx = 0
+        hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.NORTHWEST
+        hashConfigPanel.add(JLabel("Custom Data:"), hgbc)
+        hgbc.gridx = 1; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
+        hgbc.anchor = GridBagConstraints.WEST
+        self._customDataPanel = CompactCustomDataPanel()
+        hashConfigPanel.add(self._customDataPanel, hgbc)
 
         # Row 3: Keys Order
-        gbc.gridy = 3
-        gbc.gridx = 0
-        gbc.weightx = 0
-        gbc.fill = GridBagConstraints.NONE
-        gbc.anchor = GridBagConstraints.WEST
-        lbl = JLabel("Keys Order:")
-        lbl.setFont(labelFont)
-        configPanel.add(lbl, gbc)
-
-        gbc.gridx = 1
-        gbc.weightx = 1.0
-        gbc.fill = GridBagConstraints.HORIZONTAL
+        hgbc.gridy = 3; hgbc.gridx = 0; hgbc.weightx = 0
+        hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
+        hashConfigPanel.add(JLabel("Keys Order:"), hgbc)
+        hgbc.gridx = 1; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
         self._keysField = JTextField()
-        self._keysField.setFont(smallFont)
-        # Track manual edits to keys order
         self._keysField.getDocument().addDocumentListener(
             PayloadDocumentListener(self._onKeysManualEdit)
         )
-        configPanel.add(self._keysField, gbc)
+        hashConfigPanel.add(self._keysField, hgbc)
 
         # Row 4: Hash Field + Buttons
-        gbc.gridy = 4
-        gbc.gridx = 0
-        gbc.weightx = 0
-        gbc.fill = GridBagConstraints.NONE
-        lbl = JLabel("Hash Field:")
-        lbl.setFont(labelFont)
-        configPanel.add(lbl, gbc)
-
-        gbc.gridx = 1
-        gbc.weightx = 1.0
-        gbc.fill = GridBagConstraints.HORIZONTAL
-        row4 = JPanel(BorderLayout(4, 0))
+        hgbc.gridy = 4; hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
+        hashConfigPanel.add(JLabel("Hash Field:"), hgbc)
+        hgbc.gridx = 1; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
+        hashRow = JPanel(BorderLayout(4, 0))
         self._hashFieldName = JTextField("hash")
-        self._hashFieldName.setFont(smallFont)
         self._hashFieldName.setToolTipText("JSON key name where the hash will be injected")
-        self._hashFieldName.setPreferredSize(Dimension(80, 24))
-        row4.add(self._hashFieldName, BorderLayout.CENTER)
-
-        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
-        self._genBtn = JButton("Generate", actionPerformed=self._onGenerate)
-        self._genBtn.setFont(Font("SansSerif", Font.BOLD, 11))
+        self._hashFieldName.setPreferredSize(Dimension(70, 22))
+        hashRow.add(self._hashFieldName, BorderLayout.CENTER)
+        hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
+        self._genBtn    = JButton("Generate",   actionPerformed=self._onGenerate)
         self._injectBtn = JButton("Gen & Inject", actionPerformed=self._onGenerateAndInject)
-        self._injectBtn.setFont(Font("SansSerif", Font.BOLD, 11))
-        self._injectBtn.setToolTipText("Generate hash and inject into the JSON body")
-        btnPanel.add(self._genBtn)
-        btnPanel.add(self._injectBtn)
-        row4.add(btnPanel, BorderLayout.EAST)
-        configPanel.add(row4, gbc)
+        self._injectBtn.setToolTipText("Generate hash and inject into the request body")
+        hashBtnPanel.add(self._genBtn)
+        hashBtnPanel.add(self._injectBtn)
+        hashRow.add(hashBtnPanel, BorderLayout.EAST)
+        hashConfigPanel.add(hashRow, hgbc)
 
-        self._panel.add(configPanel, BorderLayout.NORTH)
+        # ----------------------------------------------------------------
+        # Crypto sub-tab panel
+        # ----------------------------------------------------------------
+        cryptoConfigPanel = JPanel(GridBagLayout())
+        cryptoConfigPanel.setBorder(EmptyBorder(4, 5, 4, 5))
 
-        # --- Center: Body editor + hash output (vertical split) ---
+        cgbc = GridBagConstraints()
+        cgbc.insets  = Insets(1, 3, 1, 3)
+        cgbc.anchor  = GridBagConstraints.WEST
+
+        # Row 0: Mode
+        cgbc.gridy = 0; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        cryptoConfigPanel.add(JLabel("Mode:"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineCryptoMode = JComboBox(["Encrypt", "Decrypt"])
+        cryptoConfigPanel.add(self._inlineCryptoMode, cgbc)
+
+        # Row 1: Algorithm
+        cgbc.gridy = 1; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        cryptoConfigPanel.add(JLabel("Algorithm:"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
+        crypto_names = extender.crypto_snippet_manager.get_all_names()
+        if not crypto_names:
+            crypto_names = ["(no algorithms)"]
+        self._inlineCryptoAlgo = JComboBox(crypto_names)
+        cryptoConfigPanel.add(self._inlineCryptoAlgo, cgbc)
+
+        # Row 2: Key
+        cgbc.gridy = 2; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        cryptoConfigPanel.add(JLabel("Key (UTF-8):"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineCryptoKey = JTextField()
+        self._inlineCryptoKey.setToolTipText("16-char UTF-8 key for AES-128-CBC")
+        cryptoConfigPanel.add(self._inlineCryptoKey, cgbc)
+
+        # Row 3: IV
+        cgbc.gridy = 3; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        cryptoConfigPanel.add(JLabel("IV (blank=Key):"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineCryptoIv = JTextField()
+        self._inlineCryptoIv.setToolTipText("Leave blank to reuse Key as IV (JS default)")
+        cryptoConfigPanel.add(self._inlineCryptoIv, cgbc)
+
+        # Row 4: Target Field + Buttons
+        cgbc.gridy = 4; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        cryptoConfigPanel.add(JLabel("Field:"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
+        cryptoRow = JPanel(BorderLayout(4, 0))
+        self._inlineCryptoField = JTextField("data")
+        self._inlineCryptoField.setToolTipText(
+            "JSON field to read (Decrypt) or write result to (Encrypt). "
+            "For Encrypt, the plaintext is taken from this body field and result injected back."
+        )
+        self._inlineCryptoField.setPreferredSize(Dimension(70, 22))
+        cryptoRow.add(self._inlineCryptoField, BorderLayout.CENTER)
+        cryptoBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
+        self._cryptoRunBtn    = JButton("Run Crypto",   actionPerformed=self._onCryptoRun)
+        self._cryptoInjectBtn = JButton("Run & Inject", actionPerformed=self._onCryptoAndInject)
+        self._cryptoInjectBtn.setToolTipText(
+            "Run crypto on the field value and inject result back into body"
+        )
+        cryptoBtnPanel.add(self._cryptoRunBtn)
+        cryptoBtnPanel.add(self._cryptoInjectBtn)
+        cryptoRow.add(cryptoBtnPanel, BorderLayout.EAST)
+        cryptoConfigPanel.add(cryptoRow, cgbc)
+
+        # Add both sub-tabs to the top tabbed pane
+        configTabs.addTab("Hash",   hashConfigPanel)
+        configTabs.addTab("Crypto", cryptoConfigPanel)
+
+        self._panel.add(configTabs, BorderLayout.NORTH)
+
+        # ================================================================
+        # CENTER: Request body editor  +  combined result output
+        # ================================================================
         centerPanel = JPanel(BorderLayout(0, 5))
 
-        # Body text area (editable request body)
+        # Editable body area
         self._bodyArea = JTextArea(15, 60)
-        self._bodyArea.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._bodyArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._bodyArea.setLineWrap(True)
         self._bodyArea.setWrapStyleWord(True)
         self._bodyArea.setEditable(editable)
-
-        # Auto-format JSON on focus lost (NO auto-extract keys here)
-        self._bodyArea.addFocusListener(
-            PayloadFocusListener(self._tryFormatJson)
-        )
+        self._bodyArea.addFocusListener(PayloadFocusListener(self._tryFormatJson))
 
         bodyScroll = JScrollPane(self._bodyArea)
-        bodyScroll.setBorder(
-            BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Request Body (editable) ",
-                TitledBorder.LEFT, TitledBorder.TOP,
-                Font("SansSerif", Font.PLAIN, 11)
-            )
-        )
+        bodyScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
 
-        # Hash output (read-only, compact)
+        # Shared output area -- shows both hash and crypto results
         self._hashOutput = JTextArea(3, 60)
-        self._hashOutput.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._hashOutput.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._hashOutput.setEditable(False)
         self._hashOutput.setLineWrap(True)
         self._hashOutput.setWrapStyleWord(True)
 
-        hashScroll = JScrollPane(self._hashOutput)
-        hashScroll.setBorder(
-            BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Generated Hash ",
-                TitledBorder.LEFT, TitledBorder.TOP,
-                Font("SansSerif", Font.PLAIN, 11)
-            )
-        )
-        hashScroll.setPreferredSize(Dimension(0, 80))
+        outputScroll = JScrollPane(self._hashOutput)
+        outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        outputScroll.setPreferredSize(Dimension(0, 80))
 
-        splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, bodyScroll, hashScroll)
+        splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, bodyScroll, outputScroll)
         splitPane.setResizeWeight(0.8)
         centerPanel.add(splitPane, BorderLayout.CENTER)
 
@@ -876,6 +1126,16 @@ class HashGenEditorTab(IMessageEditorTab):
             mainAlgo = ext._algoCombo.getSelectedItem()
             if mainAlgo:
                 self._algoCombo.setSelectedItem(mainAlgo)
+            # Sync crypto key from main Crypto tab
+            try:
+                cryptoKey = ext._cryptoKeyField.getText()
+                if cryptoKey and not self._inlineCryptoKey.getText():
+                    self._inlineCryptoKey.setText(cryptoKey)
+                cryptoIv = ext._cryptoIvField.getText()
+                if cryptoIv and not self._inlineCryptoIv.getText():
+                    self._inlineCryptoIv.setText(cryptoIv)
+            except:
+                pass
         except:
             pass
 
@@ -883,10 +1143,32 @@ class HashGenEditorTab(IMessageEditorTab):
         """Mark that the user has manually edited the keys order field."""
         self._keysUserEdited = True
 
+    def _updateInlinePasscodeState(self):
+        """Dim/enable the Secret field based on the selected algo's requires_key flag."""
+        try:
+            name    = str(self._algoCombo.getSelectedItem())
+            snippet = self._extender.snippet_manager.get_snippet(name)
+            needs   = True
+            if snippet:
+                needs = snippet.get("requires_key", True)
+            gray  = Color(160, 160, 160)
+            black = Color(0, 0, 0)
+            if needs:
+                self._passcodeField.setEditable(True)
+                self._passcodeField.setForeground(black)
+                self._passcodeLbl.setForeground(black)
+            else:
+                self._passcodeField.setEditable(False)
+                self._passcodeField.setForeground(gray)
+                self._passcodeField.setText("")
+                self._passcodeLbl.setForeground(gray)
+        except Exception:
+            pass
+
     # --- IMessageEditorTab interface ---
 
     def getTabCaption(self):
-        return "HashGen"
+        return "CipherKit"
 
     def getUiComponent(self):
         return self._panel
@@ -985,12 +1267,12 @@ class HashGenEditorTab(IMessageEditorTab):
 
     def _onGenerate(self, event=None):
         result, debug_log = self._computeHash()
-        self._hashOutput.setText(str(result))
+        self._hashOutput.setText("[HASH] " + str(result))
 
     def _onGenerateAndInject(self, event=None):
         result, debug_log = self._computeHash()
         if result and not str(result).startswith("Error"):
-            self._hashOutput.setText(str(result))
+            self._hashOutput.setText("[HASH] " + str(result))
             body_str = self._bodyArea.getText().strip()
             try:
                 ct = getattr(self, '_contentType', '')
@@ -1004,6 +1286,68 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._hashOutput.setText("Error injecting hash: %s" % str(e))
         else:
             self._hashOutput.setText(str(result))
+
+    def _onCryptoRun(self, event=None):
+        """Run AES-CBC encrypt/decrypt on the named body field and show result."""
+        try:
+            result = self._computeCrypto()
+            self._hashOutput.setText("[CRYPTO] " + str(result))
+        except Exception as e:
+            self._hashOutput.setText("[CRYPTO] Error: %s" % str(e))
+
+    def _onCryptoAndInject(self, event=None):
+        """
+        Run AES-CBC on the value of the named body field and inject result back.
+        - Encrypt mode: reads plaintext from the field, encrypts it, writes Base64 back
+        - Decrypt mode: reads Base64 from the field, decrypts it, writes plaintext back
+        """
+        try:
+            result = self._computeCrypto()
+            if not result or str(result).startswith("Error"):
+                self._hashOutput.setText("[CRYPTO] " + str(result))
+                return
+
+            body_str = self._bodyArea.getText().strip()
+            ct       = getattr(self, '_contentType', '')
+            data     = parse_body(body_str, ct)
+            field    = self._inlineCryptoField.getText().strip() or "data"
+            data[field] = str(result)
+            serialized  = serialize_body(data, body_str, ct)
+            self._bodyArea.setText(serialized)
+            self._bodyArea.setCaretPosition(0)
+            self._hashOutput.setText("[CRYPTO] " + str(result))
+        except Exception as e:
+            self._hashOutput.setText("[CRYPTO] Error: %s" % str(e))
+
+    def _computeCrypto(self):
+        """Read crypto config, read field value from body, run AES-CBC, return result."""
+        mode  = str(self._inlineCryptoMode.getSelectedItem())
+        key   = self._inlineCryptoKey.getText()
+        iv    = self._inlineCryptoIv.getText().strip() or None
+        field = self._inlineCryptoField.getText().strip() or "data"
+
+        if not key:
+            return "Error: Crypto Key is required."
+
+        body_str = self._bodyArea.getText().strip()
+        ct       = getattr(self, '_contentType', '')
+        data     = parse_body(body_str, ct)
+
+        # Get the field value from the body
+        field_value = ""
+        if isinstance(data, dict) and field in data:
+            field_value = str(data[field])
+        elif body_str:
+            # If body isn't JSON / field not found, use raw body text as input
+            field_value = body_str
+
+        if not field_value:
+            return "Error: Field '%s' not found or empty in body." % field
+
+        if mode == "Encrypt":
+            return AesCbcEngine.encrypt(field_value, key, iv)
+        else:
+            return AesCbcEngine.decrypt(field_value, key, iv)
 
     def _computeHash(self):
         name = self._algoCombo.getSelectedItem()
@@ -1075,17 +1419,19 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
-        callbacks.setExtensionName("HashGen")
+        callbacks.setExtensionName("CipherKit")
 
         # Redirect stdout/stderr to Burp's output
         sys.stdout = callbacks.getStdout()
         sys.stderr = callbacks.getStderr()
 
-        # Snippet manager
-        ext_file = callbacks.getExtensionFilename()
+        # Snippet managers
+        ext_file   = callbacks.getExtensionFilename()
         script_dir = os.path.dirname(os.path.abspath(ext_file))
-        snippets_path = os.path.join(script_dir, "snippets.json")
-        self.snippet_manager = SnippetManager(snippets_path)
+        snippets_path        = os.path.join(script_dir, "snippets.json")
+        crypto_snippets_path = os.path.join(script_dir, "crypto_snippets.json")
+        self.snippet_manager        = SnippetManager(snippets_path)
+        self.crypto_snippet_manager = CryptoSnippetManager(crypto_snippets_path)
 
         # Build main tab UI synchronously
         SwingUtilities.invokeAndWait(self._buildUI)
@@ -1097,15 +1443,16 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         # Register the main HashGen tab
         callbacks.addSuiteTab(self)
 
-        print("[+] HashGen extension loaded successfully")
-        print("[*] Snippets file: %s" % snippets_path)
-        print("[*] HashGen tab added to request editor views")
+        print("[+] CipherKit extension loaded successfully")
+        print("[*] Snippets file:       %s" % snippets_path)
+        print("[*] Crypto snippets:     %s" % crypto_snippets_path)
+        print("[*] CipherKit tab added to request editor views")
 
     # -------------------------------------------------------------------------
     # ITab implementation
     # -------------------------------------------------------------------------
     def getTabCaption(self):
-        return "HashGen"
+        return "CipherKit"
 
     def getUiComponent(self):
         return self._mainPanel
@@ -1114,7 +1461,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # IMessageEditorTabFactory implementation
     # -------------------------------------------------------------------------
     def createNewInstance(self, controller, editable):
-        return HashGenEditorTab(self, controller, editable)
+        try:
+            return HashGenEditorTab(self, controller, editable)
+        except Exception as e:
+            print("[CipherKit] ERROR creating inline tab: %s" % e)
+            print(traceback.format_exc())
+            return None
 
     # -------------------------------------------------------------------------
     # IContextMenuFactory implementation
@@ -1133,7 +1485,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         ]
 
         if ctx in valid_contexts:
-            item = JMenuItem("Send to HashGen")
+            item = JMenuItem("Send to CipherKit")
             item.addActionListener(lambda event: self._onContextMenuSend(invocation))
             menu_items.append(item)
 
@@ -1166,7 +1518,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                             parent.setSelectedIndex(idx)
 
                     self._tabbedPane.setSelectedIndex(0)
-                    print("[*] Request body sent to HashGen Generator")
+                    print("[*] Request body sent to CipherKit Hash tab")
 
     # -------------------------------------------------------------------------
     # Build the Main Tab UI
@@ -1175,26 +1527,20 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._mainPanel = JPanel(BorderLayout())
         self._mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        # Header
-        headerPanel = JPanel(FlowLayout(FlowLayout.LEFT))
-        titleLabel = JLabel("HashGen")
-        titleLabel.setFont(Font("SansSerif", Font.BOLD, 20))
-        subtitleLabel = JLabel("  -  Universal Crypto Hash Generator")
-        subtitleLabel.setFont(Font("SansSerif", Font.PLAIN, 14))
-        subtitleLabel.setForeground(Color(130, 130, 130))
-        headerPanel.add(titleLabel)
-        headerPanel.add(subtitleLabel)
-        self._mainPanel.add(headerPanel, BorderLayout.NORTH)
 
-        # Tabbed pane for Generator / Editor
+        # Tabbed pane for Generator / Crypto / Editor
         self._tabbedPane = JTabbedPane()
         self._mainPanel.add(self._tabbedPane, BorderLayout.CENTER)
 
         generatorPanel = self._buildGeneratorTab()
-        editorPanel = self._buildEditorTab()
+        cryptoPanel        = self._buildCryptoTab()
+        editorPanel        = self._buildEditorTab()
+        cryptoEditorPanel  = self._buildCryptoEditorTab()
 
-        self._tabbedPane.addTab("Generator", generatorPanel)
-        self._tabbedPane.addTab("Snippet Editor", editorPanel)
+        self._tabbedPane.addTab("Hash", generatorPanel)
+        self._tabbedPane.addTab("Crypto", cryptoPanel)
+        self._tabbedPane.addTab("Hash Editor", editorPanel)
+        self._tabbedPane.addTab("Crypto Editor", cryptoEditorPanel)
 
     # -------------------------------------------------------------------------
     # Generator Tab
@@ -1203,18 +1549,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        # --- Left side: inputs (GridBagLayout for consistent label+field alignment) ---
+        # --- Left side: inputs ---
         leftPanel = JPanel(GridBagLayout())
         leftPanel.setBorder(
-            BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder(
-                    BorderFactory.createLineBorder(Color(80, 80, 80)),
-                    " Configuration ",
-                    TitledBorder.LEFT, TitledBorder.TOP,
-                    Font("SansSerif", Font.BOLD, 12)
-                ),
-                EmptyBorder(10, 10, 10, 10)
-            )
+            _roundedCompound(radius=8, padding=10)
         )
 
         lgbc = GridBagConstraints()
@@ -1224,13 +1562,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.weightx = 1.0
         lgbc.fill = GridBagConstraints.HORIZONTAL
 
-        labelFont = Font("SansSerif", Font.BOLD, 12)
-        fieldFont = Font("SansSerif", Font.PLAIN, 12)
 
         # Algorithm
         lgbc.gridy = 0
         lbl = JLabel("Algorithm:")
-        lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
         lgbc.gridy = 1
@@ -1238,36 +1573,35 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         if not names:
             names = ["Default"]
         self._algoCombo = JComboBox(names)
-        self._algoCombo.setFont(fieldFont)
+        # Update Secret field when algorithm changes
+        self._algoCombo.addActionListener(lambda e: self._updatePasscodeFieldState())
         leftPanel.add(self._algoCombo, lgbc)
 
         # PassCode
         lgbc.gridy = 2
         lgbc.insets = Insets(10, 4, 3, 4)
         lbl = JLabel("Secret:")
-        lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
         lgbc.gridy = 3
         lgbc.insets = Insets(3, 4, 3, 4)
         self._passcodeField = JTextField()
-        self._passcodeField.setFont(fieldFont)
+        self._passcodeLabel = lbl  # keep ref for dimming
         leftPanel.add(self._passcodeField, lgbc)
+        # Set initial state for the default selected algorithm
+        SwingUtilities.invokeLater(lambda: self._updatePasscodeFieldState())
 
         # Custom Data
         lgbc.gridy = 4
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Custom Data:")
-        lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
         lgbc.gridy = 5
         lgbc.insets = Insets(3, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.NORTHWEST
-        self._customDataPanel = CustomDataPanel(
-            label_font=labelFont, field_font=fieldFont
-        )
+        self._customDataPanel = CustomDataPanel()
         leftPanel.add(self._customDataPanel, lgbc)
 
         # Keys Order
@@ -1275,13 +1609,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Keys Order (comma separated):")
-        lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
         lgbc.gridy = 7
         lgbc.insets = Insets(3, 4, 3, 4)
         self._keysOrderField = JTextField()
-        self._keysOrderField.setFont(fieldFont)
         leftPanel.add(self._keysOrderField, lgbc)
 
         # Body Format
@@ -1289,13 +1621,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Body Format:")
-        lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
         lgbc.gridy = 9
         lgbc.insets = Insets(3, 4, 3, 4)
         self._bodyFormatCombo = JComboBox(["JSON", "URL-encoded", "multipart/form-data"])
-        self._bodyFormatCombo.setFont(fieldFont)
         leftPanel.add(self._bodyFormatCombo, lgbc)
 
         # Boundary (only relevant for multipart)
@@ -1303,13 +1633,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.insets = Insets(6, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Boundary (multipart only):")
-        lbl.setFont(labelFont)
         leftPanel.add(lbl, lgbc)
 
         lgbc.gridy = 11
         lgbc.insets = Insets(3, 4, 3, 4)
         self._boundaryField = JTextField()
-        self._boundaryField.setFont(fieldFont)
         self._boundaryField.setToolTipText("Paste the boundary value from Content-Type header (without leading --)")
         leftPanel.add(self._boundaryField, lgbc)
 
@@ -1317,8 +1645,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.gridy = 12
         lgbc.insets = Insets(20, 4, 4, 4)
         lgbc.anchor = GridBagConstraints.NORTHWEST
-        self._generateBtn = JButton("Generate Hash", actionPerformed=self._onGenerate)
-        self._generateBtn.setFont(Font("SansSerif", Font.BOLD, 14))
+        self._generateBtn = JButton("Generate", actionPerformed=self._onGenerate)
         leftPanel.add(self._generateBtn, lgbc)
 
         # Spacer to push everything to the top
@@ -1328,104 +1655,70 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         leftPanel.add(JPanel(), lgbc)  # empty filler
 
 
-        # --- Right side: text areas ---
+        # ── Right side: text areas with label above each box ──
         rightPanel = JPanel(GridBagLayout())
         rightPanel.setBorder(EmptyBorder(0, 0, 0, 0))
         gbc = GridBagConstraints()
-        gbc.fill = GridBagConstraints.HORIZONTAL
-        gbc.insets = Insets(2, 0, 2, 0)
-        gbc.gridx = 0
+        gbc.gridx   = 0
         gbc.weightx = 1.0
+        gbc.fill    = GridBagConstraints.HORIZONTAL
+        gbc.insets  = Insets(0, 0, 2, 0)
 
         # Payload label
-        gbc.gridy = 0
-        gbc.weighty = 0
-        payloadLabel = self._createLabel("Payload:")
-        rightPanel.add(payloadLabel, gbc)
+        gbc.gridy  = 0; gbc.weighty = 0
+        rightPanel.add(JLabel("Payload:"), gbc)
 
         # Payload text area
-        gbc.gridy = 1
-        gbc.weighty = 1.0
-        gbc.fill = GridBagConstraints.BOTH
+        gbc.gridy  = 1; gbc.weighty = 1.0; gbc.fill = GridBagConstraints.BOTH
+        gbc.insets = Insets(0, 0, 8, 0)
         self._payloadArea = JTextArea(12, 40)
-        self._payloadArea.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._payloadArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._payloadArea.setLineWrap(True)
         self._payloadArea.setWrapStyleWord(True)
         self._payloadArea.setText('{\n  "username": "user",\n  "request_time": "20260101010101"\n}')
-
         self._payloadArea.getDocument().addDocumentListener(
             PayloadDocumentListener(self._tryExtractKeys)
         )
         self._payloadArea.addFocusListener(
             PayloadFocusListener(self._tryFormatJson)
         )
-
         payloadScroll = JScrollPane(self._payloadArea)
-        payloadScroll.setBorder(
-            BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Payload ",
-                TitledBorder.LEFT, TitledBorder.TOP,
-                Font("SansSerif", Font.PLAIN, 11)
-            )
-        )
+        payloadScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         rightPanel.add(payloadScroll, gbc)
 
-        # Output label
-        gbc.gridy = 2
-        gbc.weighty = 0
-        gbc.fill = GridBagConstraints.HORIZONTAL
-        outputLabel = self._createLabel("Output Result:")
-        rightPanel.add(outputLabel, gbc)
+        # Result Hash label
+        gbc.gridy  = 2; gbc.weighty = 0; gbc.fill = GridBagConstraints.HORIZONTAL
+        gbc.insets = Insets(0, 0, 2, 0)
+        rightPanel.add(JLabel("Result Hash:"), gbc)
 
-        # Output text area
-        gbc.gridy = 3
-        gbc.weighty = 0.2
-        gbc.fill = GridBagConstraints.BOTH
+        # Result Hash text area
+        gbc.gridy  = 3; gbc.weighty = 0.2; gbc.fill = GridBagConstraints.BOTH
+        gbc.insets = Insets(0, 0, 8, 0)
         self._outputArea = JTextArea(3, 40)
-        self._outputArea.setFont(Font("Monospaced", Font.BOLD, 14))
+        self._outputArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._outputArea.setLineWrap(True)
         self._outputArea.setWrapStyleWord(True)
         self._outputArea.setEditable(False)
-
         outputScroll = JScrollPane(self._outputArea)
-        outputScroll.setBorder(
-            BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Result Hash ",
-                TitledBorder.LEFT, TitledBorder.TOP,
-                Font("SansSerif", Font.PLAIN, 11)
-            )
-        )
+        outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         rightPanel.add(outputScroll, gbc)
 
-        # Debug Label
-        gbc.gridy = 4
-        gbc.weighty = 0
-        gbc.fill = GridBagConstraints.HORIZONTAL
-        debugLabel = self._createLabel("Debug Output:")
-        rightPanel.add(debugLabel, gbc)
+        # Debug Output label
+        gbc.gridy  = 4; gbc.weighty = 0; gbc.fill = GridBagConstraints.HORIZONTAL
+        gbc.insets = Insets(0, 0, 2, 0)
+        rightPanel.add(JLabel("Debug Output:"), gbc)
 
         # Debug text area
-        gbc.gridy = 5
-        gbc.weighty = 0.6
-        gbc.fill = GridBagConstraints.BOTH
+        gbc.gridy  = 5; gbc.weighty = 0.6; gbc.fill = GridBagConstraints.BOTH
+        gbc.insets = Insets(0, 0, 0, 0)
         self._debugArea = JTextArea(6, 40)
         self._debugArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._debugArea.setForeground(Color(40, 40, 40))
         self._debugArea.setLineWrap(True)
         self._debugArea.setWrapStyleWord(True)
         self._debugArea.setEditable(False)
-
         debugScroll = JScrollPane(self._debugArea)
-        debugScroll.setBorder(
-            BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Debug Log ",
-                TitledBorder.LEFT, TitledBorder.TOP,
-                Font("SansSerif", Font.PLAIN, 11)
-            )
-        )
+        debugScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         rightPanel.add(debugScroll, gbc)
 
         # Combine left + right
@@ -1434,6 +1727,269 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         splitPane.setResizeWeight(0.0)
         panel.add(splitPane, BorderLayout.CENTER)
 
+        return panel
+
+    # -------------------------------------------------------------------------
+    # Crypto Tab (AES-CBC-128 Encrypt / Decrypt)
+    # -------------------------------------------------------------------------
+    def _buildCryptoTab(self):
+        panel = JPanel(BorderLayout(10, 10))
+        panel.setBorder(EmptyBorder(10, 10, 10, 10))
+
+        monoFont  = Font("Monospaced", Font.PLAIN, 12)
+
+        # ---- Left config panel ----
+        leftPanel = JPanel(GridBagLayout())
+        leftPanel.setBorder(
+            _roundedCompound(radius=8, padding=10)
+        )
+
+        cgbc = GridBagConstraints()
+        cgbc.insets  = Insets(4, 4, 4, 4)
+        cgbc.anchor  = GridBagConstraints.NORTHWEST
+        cgbc.gridx   = 0
+        cgbc.weightx = 1.0
+        cgbc.fill    = GridBagConstraints.HORIZONTAL
+
+        # Mode
+        cgbc.gridy = 0
+        lbl = JLabel("Mode:")
+        leftPanel.add(lbl, cgbc)
+
+        cgbc.gridy = 1
+        self._cryptoModeCombo = JComboBox(["Encrypt", "Decrypt"])
+        leftPanel.add(self._cryptoModeCombo, cgbc)
+
+        # Algorithm (AES-CBC-128 only for now)
+        cgbc.gridy = 2
+        cgbc.insets = Insets(10, 4, 4, 4)
+        lbl = JLabel("Algorithm:")
+        leftPanel.add(lbl, cgbc)
+
+        cgbc.gridy = 3
+        cgbc.insets = Insets(4, 4, 4, 4)
+        crypto_names = self.crypto_snippet_manager.get_all_names()
+        if not crypto_names:
+            crypto_names = ["(no algorithms -- add via Crypto Editor)"]
+        self._cryptoAlgoCombo = JComboBox(crypto_names)
+        # Update Key/IV fields when algorithm changes
+        self._cryptoAlgoCombo.addActionListener(lambda e: self._updateCryptoFieldState())
+        leftPanel.add(self._cryptoAlgoCombo, cgbc)
+
+        # Key
+        cgbc.gridy = 4
+        cgbc.insets = Insets(10, 4, 4, 4)
+        lbl = JLabel("Key (UTF-8, 16 chars for AES-128):")
+        leftPanel.add(lbl, cgbc)
+
+        cgbc.gridy = 5
+        cgbc.insets = Insets(4, 4, 4, 4)
+        self._cryptoKeyField = JTextField()
+        self._cryptoKeyField.setToolTipText("16-character UTF-8 key, e.g. M@{n$vdXnJ)4F!>h")
+        leftPanel.add(self._cryptoKeyField, cgbc)
+
+        # IV
+        cgbc.gridy = 6
+        cgbc.insets = Insets(10, 4, 4, 4)
+        lbl = JLabel("IV (UTF-8, 16 chars -- blank = reuse Key):")
+        leftPanel.add(lbl, cgbc)
+
+        cgbc.gridy = 7
+        cgbc.insets = Insets(4, 4, 4, 4)
+        self._cryptoIvField = JTextField()
+        self._cryptoIvField.setToolTipText("Leave blank to use Key as IV (matches JS default)")
+        leftPanel.add(self._cryptoIvField, cgbc)
+
+        # Run button
+        cgbc.gridy = 8
+        cgbc.insets = Insets(20, 4, 4, 4)
+        self._cryptoRunBtn = JButton("Run", actionPerformed=self._onCryptoRun)
+        leftPanel.add(self._cryptoRunBtn, cgbc)
+
+        # Spacer
+        cgbc.gridy = 9
+        cgbc.weighty = 1.0
+        cgbc.insets  = Insets(0, 0, 0, 0)
+        leftPanel.add(JPanel(), cgbc)
+
+        # ---- Right: input + output text areas ----
+        rightPanel = JPanel(GridBagLayout())
+        rgbc = GridBagConstraints()
+        rgbc.fill    = GridBagConstraints.BOTH
+        rgbc.insets  = Insets(2, 0, 2, 0)
+        rgbc.gridx   = 0
+        rgbc.weightx = 1.0
+
+        # Input label
+        rgbc.gridy  = 0
+        rgbc.weighty = 0
+        rgbc.fill   = GridBagConstraints.HORIZONTAL
+        inputLbl    = JLabel("Input (plaintext for Encrypt, Base64 for Decrypt):")
+        rightPanel.add(inputLbl, rgbc)
+
+        # Input text area
+        rgbc.gridy  = 1
+        rgbc.weighty = 1.0
+        rgbc.fill   = GridBagConstraints.BOTH
+        self._cryptoInputArea = JTextArea(10, 40)
+        self._cryptoInputArea.setLineWrap(True)
+        self._cryptoInputArea.setWrapStyleWord(True)
+        inputScroll = JScrollPane(self._cryptoInputArea)
+        inputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        rightPanel.add(inputScroll, rgbc)
+
+        # Output label
+        rgbc.gridy  = 2
+        rgbc.weighty = 0
+        rgbc.fill   = GridBagConstraints.HORIZONTAL
+        outputLbl   = JLabel("Output:")
+        rightPanel.add(outputLbl, rgbc)
+
+        # Output text area
+        rgbc.gridy  = 3
+        rgbc.weighty = 0.4
+        rgbc.fill   = GridBagConstraints.BOTH
+        self._cryptoOutputArea = JTextArea(4, 40)
+        self._cryptoOutputArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._cryptoOutputArea.setEditable(False)
+        self._cryptoOutputArea.setLineWrap(True)
+        self._cryptoOutputArea.setWrapStyleWord(True)
+        outputScroll = JScrollPane(self._cryptoOutputArea)
+        outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        rightPanel.add(outputScroll, rgbc)
+
+        # Combine left + right
+        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
+        splitPane.setDividerLocation(320)
+        splitPane.setResizeWeight(0.0)
+        panel.add(splitPane, BorderLayout.CENTER)
+
+        return panel
+
+    # -------------------------------------------------------------------------
+    # UI State Helpers: requires_key / requires_iv field visibility
+    # -------------------------------------------------------------------------
+    def _updatePasscodeFieldState(self):
+        """Dim/enable the Secret field in the Hash tab based on requires_key flag."""
+        try:
+            name    = str(self._algoCombo.getSelectedItem())
+            snippet = self.snippet_manager.get_snippet(name)
+            needs   = True  # default: key required
+            if snippet:
+                needs = snippet.get("requires_key", True)
+            gray = Color(160, 160, 160)
+            black = Color(0, 0, 0)
+            if needs:
+                self._passcodeField.setEditable(True)
+                self._passcodeField.setForeground(black)
+                self._passcodeField.setToolTipText(None)
+                self._passcodeLabel.setForeground(black)
+            else:
+                self._passcodeField.setEditable(False)
+                self._passcodeField.setForeground(gray)
+                self._passcodeField.setToolTipText("Not used for " + name)
+                self._passcodeField.setText("")
+                self._passcodeLabel.setForeground(gray)
+        except Exception:
+            pass
+
+    def _updateCryptoFieldState(self):
+        """Show/dim Key and IV fields based on the selected crypto algo's flags."""
+        try:
+            name     = str(self._cryptoAlgoCombo.getSelectedItem())
+            needs_k  = self.crypto_snippet_manager.requires_key(name)
+            needs_iv = self.crypto_snippet_manager.requires_iv(name)
+            gray  = Color(160, 160, 160)
+            black = Color(0, 0, 0)
+            self._cryptoKeyField.setEditable(needs_k)
+            self._cryptoKeyField.setForeground(black if needs_k else gray)
+            self._cryptoKeyField.setToolTipText(
+                None if needs_k else "Key not required for " + name
+            )
+            self._cryptoIvField.setEditable(needs_iv)
+            self._cryptoIvField.setForeground(black if needs_iv else gray)
+            self._cryptoIvField.setToolTipText(
+                None if needs_iv else "IV not required for " + name
+            )
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------------------
+    # Crypto Editor Tab (add/edit/delete crypto snippet algorithms)
+    # -------------------------------------------------------------------------
+    def _buildCryptoEditorTab(self):
+        panel = JPanel(BorderLayout(10, 10))
+        panel.setBorder(EmptyBorder(10, 10, 10, 10))
+
+        # Top bar: name + buttons
+        topPanel = JPanel(BorderLayout(8, 0))
+        topPanel.setBorder(EmptyBorder(0, 0, 10, 0))
+
+        self._cryptoSnippetNameField = JTextField()
+        self._cryptoSnippetNameField.setBorder(
+            _roundedCompound(radius=8, padding=6)
+        )
+        self._cryptoSnippetNameField.setToolTipText("Algorithm name (e.g. AES-CBC-128, ChaCha20)")
+        topPanel.add(self._cryptoSnippetNameField, BorderLayout.CENTER)
+
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 5, 0))
+        loadBtn   = JButton("Load",   actionPerformed=self._onLoadCryptoSnippet)
+        saveBtn   = JButton("Save",   actionPerformed=self._onSaveCryptoSnippet)
+        deleteBtn = JButton("Delete", actionPerformed=self._onDeleteCryptoSnippet)
+        btnPanel.add(loadBtn)
+        btnPanel.add(saveBtn)
+        btnPanel.add(deleteBtn)
+        topPanel.add(btnPanel, BorderLayout.EAST)
+        panel.add(topPanel, BorderLayout.NORTH)
+
+        # Info label
+        infoLabel = JLabel(
+            "Define encrypt(plaintext, key, iv) and decrypt(ciphertext_b64, key, iv) -- "
+            "both must return a string. Use javax.crypto, base64, json as needed."
+        )
+        infoLabel.setForeground(Color(130, 130, 130))
+
+        # Encrypt code area
+        encTemplate = (
+            "def encrypt(plaintext, key, iv):\n"
+            "    # plaintext : str, key : str, iv : str (may be empty)\n"
+            "    # Must return a string (e.g. Base64 ciphertext)\n"
+            "    from javax.crypto import Cipher\n"
+            "    from javax.crypto.spec import SecretKeySpec, IvParameterSpec\n"
+            "    import base64\n"
+            "    return \"result\""
+        )
+        self._cryptoEncArea = JTextArea(10, 60)
+        self._cryptoEncArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._cryptoEncArea.setTabSize(4)
+        self._cryptoEncArea.setText(encTemplate)
+        encScroll = JScrollPane(self._cryptoEncArea)
+        encScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+
+        # Decrypt code area
+        decTemplate = (
+            "def decrypt(ciphertext_b64, key, iv):\n"
+            "    # ciphertext_b64 : str (Base64), key : str, iv : str (may be empty)\n"
+            "    # Must return a string (plaintext)\n"
+            "    from javax.crypto import Cipher\n"
+            "    from javax.crypto.spec import SecretKeySpec, IvParameterSpec\n"
+            "    import base64\n"
+            "    return \"result\""
+        )
+        self._cryptoDecArea = JTextArea(10, 60)
+        self._cryptoDecArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._cryptoDecArea.setTabSize(4)
+        self._cryptoDecArea.setText(decTemplate)
+        decScroll = JScrollPane(self._cryptoDecArea)
+        decScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+
+        codePane = JSplitPane(JSplitPane.VERTICAL_SPLIT, encScroll, decScroll)
+        codePane.setResizeWeight(0.5)
+
+        centerPanel = JPanel(BorderLayout(0, 6))
+        centerPanel.add(infoLabel, BorderLayout.NORTH)
+        centerPanel.add(codePane, BorderLayout.CENTER)
+        panel.add(centerPanel, BorderLayout.CENTER)
         return panel
 
     # -------------------------------------------------------------------------
@@ -1448,12 +2004,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         topPanel.setBorder(EmptyBorder(0, 0, 10, 0))
 
         self._snippetNameField = JTextField()
-        self._snippetNameField.setFont(Font("SansSerif", Font.PLAIN, 14))
         self._snippetNameField.setBorder(
-            BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                EmptyBorder(6, 8, 6, 8)
-            )
+            _roundedCompound(radius=8, padding=6)
         )
         topPanel.add(self._snippetNameField, BorderLayout.CENTER)
 
@@ -1470,12 +2022,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
 
         # Info label
         infoLabel = JLabel("Python code must define: generate(payload, passcode, custom_data=None, key_order=None)")
-        infoLabel.setFont(Font("SansSerif", Font.ITALIC, 11))
         infoLabel.setForeground(Color(130, 130, 130))
 
         # Code editor area
         self._codeArea = JTextArea(20, 60)
-        self._codeArea.setFont(Font("Monospaced", Font.PLAIN, 13))
+        self._codeArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._codeArea.setTabSize(4)
         self._codeArea.setLineWrap(False)
 
@@ -1495,14 +2046,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._codeArea.setText(default_template)
 
         codeScroll = JScrollPane(self._codeArea)
-        codeScroll.setBorder(
-            BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(Color(80, 80, 80)),
-                " Snippet Code ",
-                TitledBorder.LEFT, TitledBorder.TOP,
-                Font("SansSerif", Font.BOLD, 12)
-            )
-        )
+        codeScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
 
         centerPanel = JPanel(BorderLayout(0, 6))
         centerPanel.add(infoLabel, BorderLayout.NORTH)
@@ -1516,9 +2060,39 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # -------------------------------------------------------------------------
     def _createLabel(self, text):
         label = JLabel(text)
-        label.setFont(Font("SansSerif", Font.BOLD, 12))
         label.setAlignmentX(Component.LEFT_ALIGNMENT)
         return label
+
+    # -------------------------------------------------------------------------
+    # Actions: Crypto
+    # -------------------------------------------------------------------------
+    def _onCryptoRun(self, event=None):
+        """Encrypt or decrypt using the selected crypto snippet algorithm."""
+        try:
+            algo      = str(self._cryptoAlgoCombo.getSelectedItem())
+            mode      = str(self._cryptoModeCombo.getSelectedItem())
+            key       = self._cryptoKeyField.getText()
+            iv        = self._cryptoIvField.getText().strip()
+            input_txt = self._cryptoInputArea.getText().strip()
+
+            snippet = self.crypto_snippet_manager.get_snippet(algo)
+            if not snippet:
+                self._cryptoOutputArea.setText("Error: Algorithm '%s' not found." % algo)
+                return
+
+            needs_key = self.crypto_snippet_manager.requires_key(algo)
+            if needs_key and not key:
+                self._cryptoOutputArea.setText("Error: Key is required for %s." % algo)
+                return
+            if not input_txt:
+                self._cryptoOutputArea.setText("Error: Input is empty.")
+                return
+
+            result = CryptoSnippetEngine.execute(snippet, mode, input_txt, key, iv)
+            self._cryptoOutputArea.setText(str(result))
+
+        except Exception as e:
+            self._cryptoOutputArea.setText("Error: %s" % str(e))
 
     # -------------------------------------------------------------------------
     # Actions: Generator
@@ -1627,7 +2201,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             JOptionPane.showMessageDialog(
                 self._mainPanel,
                 "Please enter a snippet name.",
-                "HashGen - Save Error",
+                "CipherKit - Save Error",
                 JOptionPane.WARNING_MESSAGE
             )
             return
@@ -1637,7 +2211,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         JOptionPane.showMessageDialog(
             self._mainPanel,
             "Snippet '%s' saved successfully." % name,
-            "HashGen",
+            "CipherKit",
             JOptionPane.INFORMATION_MESSAGE
         )
         print("[*] Snippet saved: %s" % name)
@@ -1648,7 +2222,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             JOptionPane.showMessageDialog(
                 self._mainPanel,
                 "No snippets available.",
-                "HashGen - Load",
+                "CipherKit - Load",
                 JOptionPane.INFORMATION_MESSAGE
             )
             return
@@ -1656,7 +2230,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         selected = JOptionPane.showInputDialog(
             self._mainPanel,
             "Select a snippet to load:",
-            "HashGen - Load Snippet",
+            "CipherKit - Load Snippet",
             JOptionPane.PLAIN_MESSAGE,
             None,
             names,
@@ -1676,7 +2250,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             JOptionPane.showMessageDialog(
                 self._mainPanel,
                 "No snippets to delete.",
-                "HashGen",
+                "CipherKit",
                 JOptionPane.INFORMATION_MESSAGE
             )
             return
@@ -1684,7 +2258,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         selected = JOptionPane.showInputDialog(
             self._mainPanel,
             "Select a snippet to delete:",
-            "HashGen - Delete Snippet",
+            "CipherKit - Delete Snippet",
             JOptionPane.WARNING_MESSAGE,
             None,
             names,
@@ -1695,7 +2269,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             confirm = JOptionPane.showConfirmDialog(
                 self._mainPanel,
                 "Are you sure you want to delete '%s'?" % selected,
-                "HashGen - Confirm Delete",
+                "CipherKit - Confirm Delete",
                 JOptionPane.YES_NO_OPTION
             )
             if confirm == JOptionPane.YES_OPTION:
@@ -1710,3 +2284,79 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             names = ["Default"]
         for name in names:
             self._algoCombo.addItem(name)
+        self._updatePasscodeFieldState()
+
+    def _refreshCryptoAlgoList(self):
+        self._cryptoAlgoCombo.removeAllItems()
+        names = self.crypto_snippet_manager.get_all_names()
+        if not names:
+            self._cryptoAlgoCombo.addItem("(no algorithms -- add via Crypto Editor)")
+        else:
+            for name in names:
+                self._cryptoAlgoCombo.addItem(name)
+        self._updateCryptoFieldState()
+
+    # -------------------------------------------------------------------------
+    # Actions: Crypto Editor
+    # -------------------------------------------------------------------------
+    def _onSaveCryptoSnippet(self, event=None):
+        name = self._cryptoSnippetNameField.getText().strip()
+        enc  = self._cryptoEncArea.getText().strip()
+        dec  = self._cryptoDecArea.getText().strip()
+        if not name:
+            JOptionPane.showMessageDialog(
+                self._mainPanel, "Please enter an algorithm name.",
+                "CipherKit - Save Error", JOptionPane.WARNING_MESSAGE
+            )
+            return
+        self.crypto_snippet_manager.update_snippet(name, enc, dec)
+        self._refreshCryptoAlgoList()
+        JOptionPane.showMessageDialog(
+            self._mainPanel, "Crypto snippet '%s' saved." % name,
+            "CipherKit", JOptionPane.INFORMATION_MESSAGE
+        )
+        print("[*] Crypto snippet saved: %s" % name)
+
+    def _onLoadCryptoSnippet(self, event=None):
+        names = self.crypto_snippet_manager.get_all_names()
+        if not names:
+            JOptionPane.showMessageDialog(
+                self._mainPanel, "No crypto snippets available.",
+                "CipherKit - Load", JOptionPane.INFORMATION_MESSAGE
+            )
+            return
+        selected = JOptionPane.showInputDialog(
+            self._mainPanel, "Select a crypto snippet to load:",
+            "CipherKit - Load Crypto Snippet", JOptionPane.PLAIN_MESSAGE,
+            None, names, names[0]
+        )
+        if selected:
+            snippet = self.crypto_snippet_manager.get_snippet(str(selected))
+            if snippet:
+                self._cryptoSnippetNameField.setText(str(selected))
+                self._cryptoEncArea.setText(snippet.get("encrypt_code", ""))
+                self._cryptoDecArea.setText(snippet.get("decrypt_code", ""))
+                print("[*] Crypto snippet loaded: %s" % selected)
+
+    def _onDeleteCryptoSnippet(self, event=None):
+        names = self.crypto_snippet_manager.get_all_names()
+        if not names:
+            JOptionPane.showMessageDialog(
+                self._mainPanel, "No crypto snippets to delete.",
+                "CipherKit", JOptionPane.INFORMATION_MESSAGE
+            )
+            return
+        selected = JOptionPane.showInputDialog(
+            self._mainPanel, "Select a crypto snippet to delete:",
+            "CipherKit - Delete Crypto Snippet", JOptionPane.WARNING_MESSAGE,
+            None, names, names[0]
+        )
+        if selected:
+            confirm = JOptionPane.showConfirmDialog(
+                self._mainPanel, "Delete '%s'?" % selected,
+                "CipherKit - Confirm Delete", JOptionPane.YES_NO_OPTION
+            )
+            if confirm == JOptionPane.YES_OPTION:
+                self.crypto_snippet_manager.delete_snippet(str(selected))
+                self._refreshCryptoAlgoList()
+                print("[*] Crypto snippet deleted: %s" % selected)
