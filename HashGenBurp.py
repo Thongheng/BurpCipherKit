@@ -19,8 +19,9 @@ from java.awt import (
     Font, Color, Dimension, FlowLayout, Component, GridLayout,
     RenderingHints
 )
-from java.awt.event import FocusAdapter
+from java.awt.event import FocusAdapter, ActionListener
 from javax.swing.event import DocumentListener
+from javax.swing import Timer as _SwingTimer
 
 # Java crypto (always available in Burp's JVM -- no external deps needed)
 from javax.crypto import Cipher
@@ -503,9 +504,76 @@ class CryptoSnippetManager:
         self.snippets = {}
         self.load_snippets()
 
+    # ------------------------------------------------------------------
+    # Built-in algorithm templates (added automatically if missing)
+    # ------------------------------------------------------------------
+    _BUILTIN_AES128_ENC = (
+        "def encrypt(plaintext, key, iv):\n"
+        "    kb = key.encode('UTF-8')\n"
+        "    ib = iv.encode('UTF-8') if iv else kb[:16]\n"
+        "    sk = SecretKeySpec(kb, 'AES')\n"
+        "    c  = Cipher.getInstance('AES/CBC/PKCS5Padding')\n"
+        "    c.init(1, sk, IvParameterSpec(ib))\n"
+        "    return base64.b64encode(bytes(bytearray(c.doFinal(plaintext.encode('UTF-8')))))\n"
+    )
+    _BUILTIN_AES128_DEC = (
+        "def decrypt(ciphertext_b64, key, iv):\n"
+        "    kb = key.encode('UTF-8')\n"
+        "    ib = iv.encode('UTF-8') if iv else kb[:16]\n"
+        "    sk = SecretKeySpec(kb, 'AES')\n"
+        "    c  = Cipher.getInstance('AES/CBC/PKCS5Padding')\n"
+        "    c.init(2, sk, IvParameterSpec(ib))\n"
+        "    return bytearray(c.doFinal(base64.b64decode(ciphertext_b64))).decode('UTF-8')\n"
+    )
+    _BUILTIN_AES256_ENC = (
+        "def encrypt(plaintext, key, iv):\n"
+        "    # key = 32-byte UTF-8 string, iv = 16-byte UTF-8 string\n"
+        "    kb = key.encode('UTF-8')\n"
+        "    ib = iv.encode('UTF-8')\n"
+        "    sk = SecretKeySpec(kb, 'AES')\n"
+        "    c  = Cipher.getInstance('AES/CBC/PKCS5Padding')\n"
+        "    c.init(1, sk, IvParameterSpec(ib))\n"
+        "    return base64.b64encode(bytes(bytearray(c.doFinal(plaintext.encode('UTF-8')))))\n"
+    )
+    _BUILTIN_AES256_DEC = (
+        "def decrypt(ciphertext_b64, key, iv):\n"
+        "    # key = 32-byte UTF-8 string, iv = 16-byte UTF-8 string\n"
+        "    kb = key.encode('UTF-8')\n"
+        "    ib = iv.encode('UTF-8')\n"
+        "    sk = SecretKeySpec(kb, 'AES')\n"
+        "    c  = Cipher.getInstance('AES/CBC/PKCS5Padding')\n"
+        "    c.init(2, sk, IvParameterSpec(ib))\n"
+        "    return bytearray(c.doFinal(base64.b64decode(ciphertext_b64))).decode('UTF-8')\n"
+    )
+
+    def _ensure_builtin_defaults(self):
+        """Insert built-in algorithms if they are not already in the snippets file."""
+        changed = False
+        if "AES-CBC-128" not in self.snippets:
+            self.snippets["AES-CBC-128"] = {
+                "encrypt_code": self._BUILTIN_AES128_ENC,
+                "decrypt_code": self._BUILTIN_AES128_DEC,
+                "description":  "AES-128-CBC, PKCS5 padding. Key=16-byte UTF-8; IV=16-byte UTF-8 (blank reuses Key).",
+                "requires_key": True,
+                "requires_iv":  False,
+            }
+            changed = True
+        if "AES-256-CBC" not in self.snippets:
+            self.snippets["AES-256-CBC"] = {
+                "encrypt_code": self._BUILTIN_AES256_ENC,
+                "decrypt_code": self._BUILTIN_AES256_DEC,
+                "description":  "AES-256-CBC, PKCS5/PKCS7 padding. Key=32-byte UTF-8; IV=16-byte UTF-8 (required).",
+                "requires_key": True,
+                "requires_iv":  True,
+            }
+            changed = True
+        if changed:
+            self.save_snippets()
+
     def load_snippets(self):
         if not os.path.exists(self.filepath):
             self.snippets = {}
+            self._ensure_builtin_defaults()
             return
         try:
             with open(self.filepath, 'r') as f:
@@ -513,6 +581,7 @@ class CryptoSnippetManager:
         except Exception as e:
             print("[CipherKit] Error loading crypto snippets: %s" % str(e))
             self.snippets = {}
+        self._ensure_builtin_defaults()
 
     def save_snippets(self):
         try:
@@ -1033,18 +1102,19 @@ class HashGenEditorTab(IMessageEditorTab):
 
         # Row 2: Key
         cgbc.gridy = 2; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
-        cryptoConfigPanel.add(JLabel("Key (UTF-8):"), cgbc)
+        cryptoConfigPanel.add(JLabel("Key:"), cgbc)
         cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
         self._inlineCryptoKey = JTextField()
-        self._inlineCryptoKey.setToolTipText("16-char UTF-8 key for AES-128-CBC")
+        self._inlineCryptoKey.setToolTipText("")
         cryptoConfigPanel.add(self._inlineCryptoKey, cgbc)
 
         # Row 3: IV
         cgbc.gridy = 3; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
-        cryptoConfigPanel.add(JLabel("IV (blank=Key):"), cgbc)
+        self._inlineCryptoIvLbl = JLabel("IV:")
+        cryptoConfigPanel.add(self._inlineCryptoIvLbl, cgbc)
         cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
         self._inlineCryptoIv = JTextField()
-        self._inlineCryptoIv.setToolTipText("Leave blank to reuse Key as IV (JS default)")
+        self._inlineCryptoIv.setToolTipText("")
         cryptoConfigPanel.add(self._inlineCryptoIv, cgbc)
 
         # Row 4: Target Field + Buttons
@@ -1165,6 +1235,25 @@ class HashGenEditorTab(IMessageEditorTab):
         outputScroll.setPreferredSize(Dimension(0, 80))
         outputWrap.add(outputScroll, BorderLayout.CENTER)
 
+        # ---- Debounce timer for auto-encrypt (fires 800 ms after last keystroke) ----
+        self._cryptoAutoMode = False
+        _outerRef = self
+        class _DebounceAction(ActionListener):
+            def actionPerformed(self, e):
+                _outerRef._onAutoEncrypt()
+        self._cryptoDebounceTimer = _SwingTimer(800, _DebounceAction())
+        self._cryptoDebounceTimer.setRepeats(False)
+
+        # Document listener on Output: restart debounce when user edits plaintext
+        class _OutputDocListener(DocumentListener):
+            def insertUpdate(self, e):  self._trig()
+            def removeUpdate(self, e):  self._trig()
+            def changedUpdate(self, e): pass
+            def _trig(self):
+                if _outerRef._cryptoAutoMode:
+                    _outerRef._cryptoDebounceTimer.restart()
+        self._hashOutput.getDocument().addDocumentListener(_OutputDocListener())
+
         hcSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, bodyWrap, outputWrap)
         hcSplit.setResizeWeight(0.8)
         hashCryptoCard.add(hcSplit, BorderLayout.CENTER)
@@ -1196,20 +1285,40 @@ class HashGenEditorTab(IMessageEditorTab):
         centerPanel.add(kfCard,         "keyfinder")
         self._panel.add(centerPanel, BorderLayout.CENTER)
 
-        # Switch cards + auto-parse when tabs change
+        # Switch cards + auto-decrypt/parse when tabs change
         _outer = self
         from javax.swing.event import ChangeListener as _CL
         class _TabListener(_CL):
             def stateChanged(self, e):
                 try:
-                    if _outer._configTabs.getSelectedIndex() == 2:
+                    idx = _outer._configTabs.getSelectedIndex()
+                    if idx == 2:  # Key Finder
+                        _outer._cryptoAutoMode = False
+                        _outer._cryptoDebounceTimer.stop()
+                        _outer._hashOutput.setEditable(False)
                         _outer._cardLayout.show(centerPanel, "keyfinder")
                         _outer._onInlineKfParse()
                     else:
                         _outer._cardLayout.show(centerPanel, "hashcrypto")
+                        if idx == 1:  # Crypto tab
+                            _outer._onAutoDecrypt()
+                        else:  # Hash tab
+                            _outer._cryptoAutoMode = False
+                            _outer._cryptoDebounceTimer.stop()
+                            _outer._hashOutput.setEditable(False)
                 except Exception:
                     pass
         configTabs.addChangeListener(_TabListener())
+
+        # Also auto-decrypt when mode combo changes while on Crypto tab
+        class _ModeChangeListener(ActionListener):
+            def actionPerformed(self, e):
+                try:
+                    if _outer._configTabs.getSelectedIndex() == 1:
+                        _outer._onAutoDecrypt()
+                except Exception:
+                    pass
+        self._inlineCryptoMode.addActionListener(_ModeChangeListener())
 
         # Sync config fields from the main tab if available
         self._syncFromMainTab()
@@ -1514,12 +1623,72 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception as e:
             self._hashOutput.setText("[CRYPTO] Error: %s" % str(e))
 
+    def _onAutoDecrypt(self):
+        """Auto-decrypt the named field when switching to Crypto tab (Decrypt mode only)."""
+        self._cryptoAutoMode = False
+        self._cryptoDebounceTimer.stop()
+        mode = str(self._inlineCryptoMode.getSelectedItem())
+        if mode != "Decrypt":
+            # In Encrypt mode just keep output read-only and clear it
+            self._hashOutput.setEditable(False)
+            self._hashOutput.setText("")
+            return
+        key = self._inlineCryptoKey.getText()
+        if not key:
+            self._hashOutput.setEditable(False)
+            self._hashOutput.setText("[Auto-decrypt] Key is required.")
+            return
+        try:
+            result = self._computeCrypto()
+            if result and not str(result).startswith("Error"):
+                # Set text without triggering the debounce listener
+                self._hashOutput.setEditable(True)
+                self._hashOutput.setText(str(result))
+                self._cryptoAutoMode = True  # now enable auto-encrypt on edits
+            else:
+                self._hashOutput.setEditable(False)
+                self._hashOutput.setText(str(result))
+        except Exception as e:
+            self._hashOutput.setEditable(False)
+            self._hashOutput.setText("[Auto-decrypt] Error: %s" % str(e))
+
+    def _onAutoEncrypt(self):
+        """Debounced: encrypt the plaintext in Output and inject back into the body field."""
+        if not self._cryptoAutoMode:
+            return
+        try:
+            plaintext = self._hashOutput.getText()
+            if not plaintext:
+                return
+            key   = self._inlineCryptoKey.getText()
+            iv    = self._inlineCryptoIv.getText().strip() or None
+            field = self._inlineCryptoField.getText().strip() or "data"
+            if not key:
+                return
+            algo    = str(self._inlineCryptoAlgo.getSelectedItem()) if hasattr(self, '_inlineCryptoAlgo') else "AES-CBC-128"
+            snippet = self._extender.crypto_snippet_manager.get_snippet(algo)
+            if snippet:
+                encrypted = CryptoSnippetEngine.execute(snippet, "Encrypt", plaintext, key, iv or "")
+            else:
+                encrypted = AesCbcEngine.encrypt(plaintext, key, iv)
+            body_str   = self._bodyArea.getText().strip()
+            ct         = getattr(self, '_contentType', '')
+            data       = parse_body(body_str, ct)
+            data[field] = str(encrypted)
+            serialized  = serialize_body(data, body_str, ct)
+            # Update body without disrupting caret
+            self._bodyArea.setText(serialized)
+            self._bodyArea.setCaretPosition(0)
+        except Exception:
+            pass  # Silent: user may still be mid-edit
+
     def _computeCrypto(self):
-        """Read crypto config, read field value from body, run AES-CBC, return result."""
+        """Read crypto config, read field value from body, run selected algorithm."""
         mode  = str(self._inlineCryptoMode.getSelectedItem())
         key   = self._inlineCryptoKey.getText()
-        iv    = self._inlineCryptoIv.getText().strip() or None
+        iv    = self._inlineCryptoIv.getText().strip() or ""
         field = self._inlineCryptoField.getText().strip() or "data"
+        algo  = str(self._inlineCryptoAlgo.getSelectedItem()) if hasattr(self, '_inlineCryptoAlgo') else "AES-CBC-128"
 
         if not key:
             return "Error: Crypto Key is required."
@@ -1528,21 +1697,24 @@ class HashGenEditorTab(IMessageEditorTab):
         ct       = getattr(self, '_contentType', '')
         data     = parse_body(body_str, ct)
 
-        # Get the field value from the body
         field_value = ""
         if isinstance(data, dict) and field in data:
             field_value = str(data[field])
         elif body_str:
-            # If body isn't JSON / field not found, use raw body text as input
             field_value = body_str
 
         if not field_value:
             return "Error: Field '%s' not found or empty in body." % field
 
-        if mode == "Encrypt":
-            return AesCbcEngine.encrypt(field_value, key, iv)
+        # Dispatch through snippet system; fall back to built-in AesCbcEngine
+        snippet = self._extender.crypto_snippet_manager.get_snippet(algo)
+        if snippet:
+            return CryptoSnippetEngine.execute(snippet, mode, field_value, key, iv)
         else:
-            return AesCbcEngine.decrypt(field_value, key, iv)
+            if mode == "Encrypt":
+                return AesCbcEngine.encrypt(field_value, key, iv or None)
+            else:
+                return AesCbcEngine.decrypt(field_value, key, iv or None)
 
     def _computeHash(self):
         name = self._algoCombo.getSelectedItem()
