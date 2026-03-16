@@ -34,6 +34,7 @@ import hmac
 import base64
 import time
 import traceback
+import itertools
 
 
 # =============================================================================
@@ -1069,44 +1070,146 @@ class HashGenEditorTab(IMessageEditorTab):
         cryptoRow.add(cryptoBtnPanel, BorderLayout.EAST)
         cryptoConfigPanel.add(cryptoRow, cgbc)
 
-        # Add both sub-tabs to the top tabbed pane
-        configTabs.addTab("Hash",   hashConfigPanel)
-        configTabs.addTab("Crypto", cryptoConfigPanel)
+        # ----------------------------------------------------------------
+        # Key Finder sub-tab panel (compact controls only — no Parsed/Results)
+        # Parsed Fields + Results live in the CENTER card to avoid inflating
+        # the configTabs height for Hash/Crypto tabs.
+        # ----------------------------------------------------------------
+        kfPanel = JPanel(GridBagLayout())
+        kfPanel.setBorder(EmptyBorder(4, 5, 4, 5))
 
+        kgbc = GridBagConstraints()
+        kgbc.insets = Insets(2, 3, 2, 3)
+        kgbc.anchor = GridBagConstraints.WEST
+
+        # Row 0: Body Format + Parse button
+        kgbc.gridy = 0; kgbc.gridx = 0; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
+        kfPanel.add(JLabel("Body Format:"), kgbc)
+        kgbc.gridx = 1; kgbc.weightx = 1.0; kgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineKfFormatCombo = JComboBox(["JSON", "Form Data"])
+        kfPanel.add(self._inlineKfFormatCombo, kgbc)
+        kgbc.gridx = 2; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
+        inlineParseBtn = JButton("Parse Body", actionPerformed=self._onInlineKfParse)
+        kfPanel.add(inlineParseBtn, kgbc)
+
+        # Row 1: Additional Values
+        kgbc.gridy = 1; kgbc.gridx = 0; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
+        kgbc.anchor = GridBagConstraints.NORTHWEST
+        kfPanel.add(JLabel("Additional Values:"), kgbc)
+        kgbc.gridx = 1; kgbc.gridwidth = 2; kgbc.weightx = 1.0; kgbc.fill = GridBagConstraints.HORIZONTAL
+        kgbc.anchor = GridBagConstraints.WEST
+        self._inlineKfAdditionalArea = JTextArea(2, 40)
+        self._inlineKfAdditionalArea.setFont(Font("Monospaced", Font.PLAIN, 11))
+        self._inlineKfAdditionalArea.setLineWrap(True)
+        self._inlineKfAdditionalArea.setToolTipText("Extra key: value pairs not in body, e.g. API: abc123")
+        kfPanel.add(JScrollPane(self._inlineKfAdditionalArea), kgbc)
+        kgbc.gridwidth = 1
+
+        # Row 2: Known String
+        kgbc.gridy = 2; kgbc.gridx = 0; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
+        kgbc.anchor = GridBagConstraints.NORTHWEST
+        kfPanel.add(JLabel("Known String:"), kgbc)
+        kgbc.gridx = 1; kgbc.gridwidth = 2; kgbc.weightx = 1.0; kgbc.fill = GridBagConstraints.HORIZONTAL
+        kgbc.anchor = GridBagConstraints.WEST
+        self._inlineKfKnownArea = JTextArea(2, 40)
+        self._inlineKfKnownArea.setFont(Font("Monospaced", Font.PLAIN, 11))
+        self._inlineKfKnownArea.setLineWrap(True)
+        kfPanel.add(JScrollPane(self._inlineKfKnownArea), kgbc)
+        kgbc.gridwidth = 1
+
+        # Row 3: Find button
+        kgbc.gridy = 3; kgbc.gridx = 0; kgbc.gridwidth = 3; kgbc.weightx = 1.0
+        kgbc.fill = GridBagConstraints.HORIZONTAL; kgbc.anchor = GridBagConstraints.WEST
+        inlineFindBtn = JButton("Find Key Order", actionPerformed=self._onInlineKfFind)
+        kfPanel.add(inlineFindBtn, kgbc)
+
+        # Add all sub-tabs
+        configTabs.addTab("Hash",       hashConfigPanel)
+        configTabs.addTab("Crypto",     cryptoConfigPanel)
+        configTabs.addTab("Key Finder", kfPanel)
+
+        self._configTabs = configTabs
         self._panel.add(configTabs, BorderLayout.NORTH)
 
         # ================================================================
-        # CENTER: Request body editor  +  combined result output
+        # CENTER: CardLayout — switches between Hash/Crypto view and KF view
         # ================================================================
-        centerPanel = JPanel(BorderLayout(0, 5))
+        from java.awt import CardLayout as _CardLayout
+        self._cardLayout  = _CardLayout()
+        centerPanel = JPanel(self._cardLayout)
 
-        # Editable body area
+        # ---- Card 1: Hash/Crypto — Request Body + Output ----
+        hashCryptoCard = JPanel(BorderLayout(0, 4))
+
+        bodyWrap = JPanel(BorderLayout(0, 2))
+        bodyWrap.add(JLabel("Request Body:"), BorderLayout.NORTH)
         self._bodyArea = JTextArea(15, 60)
         self._bodyArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._bodyArea.setLineWrap(True)
         self._bodyArea.setWrapStyleWord(True)
         self._bodyArea.setEditable(editable)
         self._bodyArea.addFocusListener(PayloadFocusListener(self._tryFormatJson))
-
         bodyScroll = JScrollPane(self._bodyArea)
         bodyScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        bodyWrap.add(bodyScroll, BorderLayout.CENTER)
 
-        # Shared output area -- shows both hash and crypto results
+        outputWrap = JPanel(BorderLayout(0, 2))
+        outputWrap.add(JLabel("Output:"), BorderLayout.NORTH)
         self._hashOutput = JTextArea(3, 60)
         self._hashOutput.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._hashOutput.setEditable(False)
         self._hashOutput.setLineWrap(True)
         self._hashOutput.setWrapStyleWord(True)
-
         outputScroll = JScrollPane(self._hashOutput)
         outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         outputScroll.setPreferredSize(Dimension(0, 80))
+        outputWrap.add(outputScroll, BorderLayout.CENTER)
 
-        splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, bodyScroll, outputScroll)
-        splitPane.setResizeWeight(0.8)
-        centerPanel.add(splitPane, BorderLayout.CENTER)
+        hcSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, bodyWrap, outputWrap)
+        hcSplit.setResizeWeight(0.8)
+        hashCryptoCard.add(hcSplit, BorderLayout.CENTER)
 
+        # ---- Card 2: Key Finder — Parsed Fields + Results ----
+        kfCard = JPanel(BorderLayout(0, 4))
+
+        parsedWrap = JPanel(BorderLayout(0, 2))
+        parsedWrap.add(JLabel("Parsed Fields (key: value):"), BorderLayout.NORTH)
+        self._inlineKfParsedArea = JTextArea(8, 30)
+        self._inlineKfParsedArea.setFont(Font("Monospaced", Font.PLAIN, 11))
+        self._inlineKfParsedArea.setEditable(True)
+        self._inlineKfParsedArea.setLineWrap(True)
+        parsedWrap.add(JScrollPane(self._inlineKfParsedArea), BorderLayout.CENTER)
+
+        resultsWrap = JPanel(BorderLayout(0, 2))
+        resultsWrap.add(JLabel("Results:"), BorderLayout.NORTH)
+        self._inlineKfResultArea = JTextArea(8, 30)
+        self._inlineKfResultArea.setFont(Font("Monospaced", Font.PLAIN, 11))
+        self._inlineKfResultArea.setEditable(False)
+        self._inlineKfResultArea.setLineWrap(True)
+        resultsWrap.add(JScrollPane(self._inlineKfResultArea), BorderLayout.CENTER)
+
+        kfSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, parsedWrap, resultsWrap)
+        kfSplit.setResizeWeight(0.4)
+        kfCard.add(kfSplit, BorderLayout.CENTER)
+
+        centerPanel.add(hashCryptoCard, "hashcrypto")
+        centerPanel.add(kfCard,         "keyfinder")
         self._panel.add(centerPanel, BorderLayout.CENTER)
+
+        # Switch cards + auto-parse when tabs change
+        _outer = self
+        from javax.swing.event import ChangeListener as _CL
+        class _TabListener(_CL):
+            def stateChanged(self, e):
+                try:
+                    if _outer._configTabs.getSelectedIndex() == 2:
+                        _outer._cardLayout.show(centerPanel, "keyfinder")
+                        _outer._onInlineKfParse()
+                    else:
+                        _outer._cardLayout.show(centerPanel, "hashcrypto")
+                except Exception:
+                    pass
+        configTabs.addChangeListener(_TabListener())
 
         # Sync config fields from the main tab if available
         self._syncFromMainTab()
@@ -1164,6 +1267,98 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._passcodeLbl.setForeground(gray)
         except Exception:
             pass
+
+    def _onInlineKfParse(self, event=None):
+        """Parse the body textarea into the inline Key Finder parsed fields."""
+        from collections import OrderedDict
+        body = self._bodyArea.getText().strip()
+        fmt  = str(self._inlineKfFormatCombo.getSelectedItem())
+        try:
+            pairs = OrderedDict()
+            if fmt == "JSON":
+                data = json.loads(body)
+                for k, v in data.items():
+                    pairs[str(k)] = str(v)
+            else:
+                for part in body.split("&"):
+                    if "=" in part:
+                        k, _, v = part.partition("=")
+                        pairs[k.strip()] = v.strip()
+            if not pairs:
+                self._inlineKfParsedArea.setText("(no fields found)")
+                return
+            self._inlineKfParsedArea.setText("\n".join("%s: %s" % (k, v) for k, v in pairs.items()))
+        except Exception as e:
+            self._inlineKfParsedArea.setText("Parse error: %s" % str(e))
+
+    def _onInlineKfFind(self, event=None):
+        """Brute-force key order from inline Key Finder fields."""
+        from collections import OrderedDict
+        known = str(self._inlineKfKnownArea.getText().strip())
+        if not known:
+            self._inlineKfResultArea.setText("Please enter the known concatenated string.")
+            return
+
+        pairs = OrderedDict()
+        # Parsed fields
+        for line in self._inlineKfParsedArea.getText().strip().splitlines():
+            line = line.strip()
+            if ":" in line:
+                k, _, v = line.partition(":")
+                pairs[k.strip()] = v.strip()
+        # Additional values
+        for line in self._inlineKfAdditionalArea.getText().strip().splitlines():
+            line = line.strip()
+            if ":" in line:
+                k, _, v = line.partition(":")
+                pairs[k.strip()] = v.strip()
+
+        if not pairs:
+            self._inlineKfResultArea.setText("No fields found. Click Parse Body first.")
+            return
+        if len(pairs) > 10:
+            self._inlineKfResultArea.setText("Too many fields (max 10). Edit Parsed Fields to keep only relevant keys.")
+            return
+
+        keys = list(pairs.keys())
+        matches = []
+        total = 0
+        for size in range(1, len(keys) + 1):
+            for subset in itertools.combinations(keys, size):
+                for perm in itertools.permutations(subset):
+                    total += 1
+                    if "".join(str(pairs[k]) for k in perm) == known:
+                        matches.append(perm)
+
+        if not matches:
+            lines = ["No match found.", ""]
+            # Show which field values appear in the known string
+            found_keys = [(k, v) for k, v in pairs.items() if v and str(v) in known]
+            if found_keys:
+                lines.append("Values found in known string:")
+                for k, v in found_keys:
+                    lines.append("  %s : %s" % (k, v))
+                lines.append("")
+            # Find segments in the known string not covered by any field value
+            remaining = known
+            for _, v in found_keys:
+                remaining = remaining.replace(str(v), "\x00", 1)
+            unknown_parts = [p for p in remaining.split("\x00") if p]
+            if unknown_parts:
+                lines.append("Unknown segment(s) not from any field:")
+                for part in unknown_parts:
+                    lines.append("  %s" % part)
+            self._inlineKfResultArea.setText("\n".join(lines))
+        else:
+            lines = []
+            for i, perm in enumerate(matches, 1):
+                if len(matches) > 1:
+                    lines.append("Match #%d:" % i)
+                lines.append("Key order : %s" % ", ".join(perm))
+                lines.append("Concat    : %s" % "".join(str(pairs[k]) for k in perm))
+                if i < len(matches):
+                    lines.append("")
+            self._inlineKfResultArea.setText("\n".join(lines))
 
     # --- IMessageEditorTab interface ---
 
@@ -1536,9 +1731,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         cryptoPanel        = self._buildCryptoTab()
         editorPanel        = self._buildEditorTab()
         cryptoEditorPanel  = self._buildCryptoEditorTab()
+        keyFinderPanel     = self._buildKeyFinderTab()
 
         self._tabbedPane.addTab("Hash", generatorPanel)
         self._tabbedPane.addTab("Crypto", cryptoPanel)
+        self._tabbedPane.addTab("Key Finder", keyFinderPanel)
         self._tabbedPane.addTab("Hash Editor", editorPanel)
         self._tabbedPane.addTab("Crypto Editor", cryptoEditorPanel)
 
@@ -1991,6 +2188,266 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         centerPanel.add(codePane, BorderLayout.CENTER)
         panel.add(centerPanel, BorderLayout.CENTER)
         return panel
+
+    # -------------------------------------------------------------------------
+    # Snippet Editor Tab
+    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Key Order Finder Tab
+    # -------------------------------------------------------------------------
+    def _buildKeyFinderTab(self):
+        """
+        Reverse-engineer key concatenation order.
+        Given a JSON / form-data body and a known concatenated string,
+        find which permutation of the field values produces that string.
+
+        Layout:
+          LEFT  – Body Format, Request Body (large), Additional Values, Parse Body button
+          RIGHT – Parsed Fields, Known String, Find Key Order, Results
+        """
+        panel = JPanel(BorderLayout(10, 10))
+        panel.setBorder(EmptyBorder(10, 10, 10, 10))
+
+        # ---- LEFT: Body Format, Request Body, Additional Values, Parse button ----
+        leftPanel = JPanel(GridBagLayout())
+        leftPanel.setBorder(_roundedCompound(radius=8, padding=10))
+
+        lgbc = GridBagConstraints()
+        lgbc.gridx = 0; lgbc.weightx = 1.0; lgbc.fill = GridBagConstraints.HORIZONTAL
+        lgbc.insets = Insets(4, 4, 4, 4)
+
+        # Body format dropdown
+        lgbc.gridy = 0; lgbc.weighty = 0
+        fmtRow = JPanel(BorderLayout(0, 2))
+        fmtRow.add(JLabel("Body Format:"), BorderLayout.NORTH)
+        self._kfFormatCombo = JComboBox(["JSON", "Form Data"])
+        fmtRow.add(self._kfFormatCombo, BorderLayout.CENTER)
+        leftPanel.add(fmtRow, lgbc)
+
+        # Request body textarea (large)
+        lgbc.gridy = 1; lgbc.insets = Insets(8, 4, 2, 4)
+        leftPanel.add(JLabel("Request Body (paste here):"), lgbc)
+
+        lgbc.gridy = 2; lgbc.weighty = 1.0; lgbc.fill = GridBagConstraints.BOTH
+        lgbc.insets = Insets(2, 4, 8, 4)
+        self._kfBodyArea = JTextArea(12, 30)
+        self._kfBodyArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._kfBodyArea.setLineWrap(True)
+        self._kfBodyArea.setWrapStyleWord(True)
+        bodyScroll = JScrollPane(self._kfBodyArea)
+        bodyScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        leftPanel.add(bodyScroll, lgbc)
+
+        # Additional values
+        lgbc.gridy = 3; lgbc.weighty = 0; lgbc.fill = GridBagConstraints.HORIZONTAL
+        lgbc.insets = Insets(0, 4, 2, 4)
+        leftPanel.add(JLabel("Additional Values (key: value):"), lgbc)
+
+        lgbc.gridy = 4; lgbc.weighty = 0.3; lgbc.fill = GridBagConstraints.BOTH
+        lgbc.insets = Insets(2, 4, 8, 4)
+        self._kfAdditionalArea = JTextArea(3, 26)
+        self._kfAdditionalArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._kfAdditionalArea.setEditable(True)
+        self._kfAdditionalArea.setLineWrap(True)
+        self._kfAdditionalArea.setToolTipText("Extra keys not in the request body, e.g.  API: A2345@#$...")
+        addScroll = JScrollPane(self._kfAdditionalArea)
+        addScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        leftPanel.add(addScroll, lgbc)
+
+        # Parse button
+        lgbc.gridy = 5; lgbc.weighty = 0; lgbc.fill = GridBagConstraints.HORIZONTAL
+        lgbc.insets = Insets(0, 4, 4, 4)
+        parseBtn = JButton("Parse Body", actionPerformed=self._onParseKeyFinderBody)
+        parseBtn.setToolTipText("Parse the request body and populate Parsed Fields on the right")
+        leftPanel.add(parseBtn, lgbc)
+
+        # ---- RIGHT: Parsed Fields, Known String, Find, Results ----
+        rightPanel = JPanel(GridBagLayout())
+        rgbc = GridBagConstraints()
+        rgbc.gridx = 0; rgbc.weightx = 1.0; rgbc.fill = GridBagConstraints.HORIZONTAL
+        rgbc.insets = Insets(0, 0, 2, 0)
+
+        # Parsed fields (editable)
+        rgbc.gridy = 0; rgbc.weighty = 0
+        rightPanel.add(JLabel("Parsed Fields (key: value):"), rgbc)
+
+        rgbc.gridy = 1; rgbc.weighty = 0.4; rgbc.fill = GridBagConstraints.BOTH
+        rgbc.insets = Insets(2, 0, 8, 0)
+        self._kfParsedArea = JTextArea(8, 28)
+        self._kfParsedArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._kfParsedArea.setEditable(True)
+        self._kfParsedArea.setLineWrap(True)
+        self._kfParsedArea.setToolTipText("Auto-filled by Parse Body, or edit manually")
+        parsedScroll = JScrollPane(self._kfParsedArea)
+        parsedScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        rightPanel.add(parsedScroll, rgbc)
+
+        # Known concatenated string (bigger box)
+        rgbc.gridy = 2; rgbc.weighty = 0; rgbc.fill = GridBagConstraints.HORIZONTAL
+        rgbc.insets = Insets(0, 0, 2, 0)
+        rightPanel.add(JLabel("Known Concatenated String (the hash input):"), rgbc)
+
+        rgbc.gridy = 3; rgbc.weighty = 0.2; rgbc.fill = GridBagConstraints.BOTH
+        rgbc.insets = Insets(2, 0, 8, 0)
+        self._kfKnownArea = JTextArea(5, 28)
+        self._kfKnownArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._kfKnownArea.setLineWrap(True)
+        self._kfKnownArea.setWrapStyleWord(True)
+        knownScroll = JScrollPane(self._kfKnownArea)
+        knownScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        rightPanel.add(knownScroll, rgbc)
+
+        # Find button
+        rgbc.gridy = 4; rgbc.weighty = 0; rgbc.fill = GridBagConstraints.HORIZONTAL
+        rgbc.insets = Insets(0, 0, 8, 0)
+        findBtn = JButton("Find Key Order", actionPerformed=self._onFindOrder)
+        rightPanel.add(findBtn, rgbc)
+
+        # Results
+        rgbc.gridy = 5; rgbc.insets = Insets(0, 0, 2, 0)
+        rightPanel.add(JLabel("Results:"), rgbc)
+
+        rgbc.gridy = 6; rgbc.weighty = 0.4; rgbc.fill = GridBagConstraints.BOTH
+        rgbc.insets = Insets(2, 0, 0, 0)
+        self._kfResultArea = JTextArea(8, 40)
+        self._kfResultArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._kfResultArea.setEditable(False)
+        self._kfResultArea.setLineWrap(True)
+        self._kfResultArea.setWrapStyleWord(True)
+        resultScroll = JScrollPane(self._kfResultArea)
+        resultScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        rightPanel.add(resultScroll, rgbc)
+
+        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
+        splitPane.setDividerLocation(420)
+        splitPane.setResizeWeight(0.45)
+        panel.add(splitPane, BorderLayout.CENTER)
+        return panel
+
+    def _onParseKeyFinderBody(self, event=None):
+        """Parse the body textarea and populate the Parsed Fields textarea."""
+        body = self._kfBodyArea.getText().strip()
+        fmt  = str(self._kfFormatCombo.getSelectedItem())
+        try:
+            pairs = self._kfParseBody(body, fmt)
+            if not pairs:
+                self._kfParsedArea.setText("(no fields found)")
+                return
+            lines = ["%s: %s" % (k, v) for k, v in pairs.items()]
+            self._kfParsedArea.setText("\n".join(lines))
+        except Exception as e:
+            self._kfParsedArea.setText("Parse error: %s" % str(e))
+
+    def _kfParseBody(self, body, fmt):
+        """Return OrderedDict-like list of (key, value) from JSON or form data."""
+        from collections import OrderedDict
+        pairs = OrderedDict()
+        if fmt == "JSON":
+            data = json.loads(body)
+            for k, v in data.items():
+                pairs[str(k)] = str(v)
+        else:  # Form Data
+            for part in body.split("&"):
+                if "=" in part:
+                    k, _, v = part.partition("=")
+                    pairs[k.strip()] = v.strip()
+        return pairs
+
+    def _kfReadParsedFields(self):
+        """Read the manually-editable Parsed Fields and Additional Values areas back into an OrderedDict."""
+        from collections import OrderedDict
+        pairs = OrderedDict()
+        
+        # Read from Parsed Fields
+        text1 = self._kfParsedArea.getText().strip()
+        for line in text1.splitlines():
+            line = line.strip()
+            if ":" in line:
+                k, _, v = line.partition(":")
+                pairs[k.strip()] = v.strip()
+                
+        # Read from Additional Values
+        text2 = self._kfAdditionalArea.getText().strip()
+        for line in text2.splitlines():
+            line = line.strip()
+            if ":" in line:
+                k, _, v = line.partition(":")
+                pairs[k.strip()] = v.strip()
+                
+        return pairs
+
+    def _onFindOrder(self, event=None):
+        """
+        Brute-force all subsets + permutations to find which key order matches
+        the known concatenated string.  Tries every combination of 1..N keys so
+        the known string can contain only a subset of the parsed fields.
+        """
+        known = str(self._kfKnownArea.getText().strip())
+        sep   = ""
+
+        if not known:
+            self._kfResultArea.setText("Please enter the known concatenated string.")
+            return
+
+        pairs = self._kfReadParsedFields()
+        if not pairs:
+            self._kfResultArea.setText("No fields found. Paste a body and click Parse Body first.")
+            return
+
+        if len(pairs) > 10:
+            self._kfResultArea.setText(
+                "Warning: %d fields is too many to brute-force.\n"
+                "Use the 'Include Only Keys' filter to narrow it down (max 10)." % len(pairs)
+            )
+            return
+
+        keys   = list(pairs.keys())
+        values = pairs
+        matches = []   # list of tuples (subset_size, perm_tuple)
+        total   = 0
+
+        # Try every non-empty subset size, then every permutation of that subset
+        for size in range(1, len(keys) + 1):
+            for subset in itertools.combinations(keys, size):
+                for perm in itertools.permutations(subset):
+                    total += 1
+                    concat = sep.join(str(values[k]) for k in perm)
+                    if concat == known:
+                        matches.append(perm)
+
+        lines = []
+        lines.append("Known string : '%s'" % known)
+        lines.append("Fields tried : %s" % ", ".join(keys))
+        lines.append("Permutations : %d (all subsets)" % total)
+        lines.append("-" * 50)
+
+        if not matches:
+            lines.append("No match found.")
+            lines.append("")
+            lines.append("Tip: check if the separator or values are correct.")
+            lines.append("Values used:")
+            for k, v in values.items():
+                lines.append("  %s = '%s'" % (k, str(v)))
+        else:
+            lines.append("%d match(es) found:" % len(matches))
+            lines.append("")
+            for i, perm in enumerate(matches, 1):
+                key_order   = ", ".join(perm)
+                concat_show = sep.join(str(values[k]) for k in perm)
+                lines.append("Match #%d:" % i)
+                lines.append("  Key order  : %s" % key_order)
+                lines.append("  Concat     : '%s'" % concat_show)
+                lines.append("")
+            lines.append("Copy the key order above into the Hash tab's 'Keys Order' field.")
+
+        self._kfResultArea.setText("\n".join(lines))
+
+    @staticmethod
+    def _factorial(n):
+        r = 1
+        for i in range(2, n + 1):
+            r *= i
+        return r
 
     # -------------------------------------------------------------------------
     # Snippet Editor Tab
