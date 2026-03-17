@@ -1226,13 +1226,9 @@ class HashGenEditorTab(IMessageEditorTab):
         self._inlineCryptoField.setPreferredSize(Dimension(70, 22))
         cryptoRow.add(self._inlineCryptoField, BorderLayout.CENTER)
         cryptoBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
-        self._cryptoRunBtn    = JButton("Run Crypto",   actionPerformed=self._onCryptoRun)
-        self._cryptoInjectBtn = JButton("Run & Inject", actionPerformed=self._onCryptoAndInject)
-        self._cryptoInjectBtn.setToolTipText(
-            "Run crypto on the field value and inject result back into body"
-        )
+        self._cryptoRunBtn = JButton("Run Crypto", actionPerformed=self._onCryptoRun)
+        self._cryptoRunBtn.setToolTipText("Manually run encrypt/decrypt on the body field")
         cryptoBtnPanel.add(self._cryptoRunBtn)
-        cryptoBtnPanel.add(self._cryptoInjectBtn)
         cryptoRow.add(cryptoBtnPanel, BorderLayout.EAST)
         cryptoConfigPanel.add(cryptoRow, cgbc)
 
@@ -1563,9 +1559,7 @@ class HashGenEditorTab(IMessageEditorTab):
                 mainCryptoField = ext._mainCryptoField.getText().strip()
                 if mainCryptoField:
                     self._inlineCryptoField.setText(mainCryptoField)
-                mainCryptoMode = ext._cryptoModeCombo.getSelectedItem()
-                if mainCryptoMode:
-                    self._inlineCryptoMode.setSelectedItem(mainCryptoMode)
+                # Do NOT sync mode — it is managed automatically by auto-decrypt/encrypt
             except Exception as e:
                 print("[CipherKit] Sync crypto error: %s" % str(e))
         except Exception as e:
@@ -1581,32 +1575,7 @@ class HashGenEditorTab(IMessageEditorTab):
             app_name, app, pattern, ep = self._extender.preset_manager.find_by_url(path)
             if not app:
                 return False
-            # App-level fields
-            if app.get("algorithm"):
-                self._algoCombo.setSelectedItem(app["algorithm"])
-            if "secret" in app:
-                self._passcodeField.setText(app["secret"])
-            if app.get("custom_data"):
-                self._customDataPanel.setPairs(app["custom_data"])
-            if "hash_field" in app:
-                self._hashFieldName.setText(app["hash_field"])
-            # Crypto config - set key/iv/field BEFORE mode to avoid spurious
-            # "Key is required" from the mode-change listener firing too early
-            c = app.get("crypto", {})
-            if c.get("algorithm"):
-                self._inlineCryptoAlgo.setSelectedItem(c["algorithm"])
-            if "key" in c:
-                self._inlineCryptoKey.setText(c["key"])
-            if "iv" in c:
-                self._inlineCryptoIv.setText(c["iv"])
-            if "field" in c:
-                self._inlineCryptoField.setText(c["field"])
-            if c.get("mode"):
-                self._inlineCryptoMode.setSelectedItem(c["mode"])
-            # Endpoint-level: keys_order
-            if ep and "keys_order" in ep:
-                self._keysField.setText(ep["keys_order"])
-                self._keysUserEdited = True
+            self._applyAppPresetToInlineUI(app, ep)
             # Update Preset tab UI
             try:
                 self._inlinePresetCombo.setSelectedItem(app_name)
@@ -1621,6 +1590,30 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception as e:
             print("[CipherKit] Preset auto-load error: %s" % str(e))
             return False
+
+    def _applyAppPresetToInlineUI(self, app, ep=None):
+        """Apply app-level preset config + optional endpoint to all inline UI fields."""
+        if app.get("algorithm"):
+            self._algoCombo.setSelectedItem(app["algorithm"])
+        if "secret" in app:
+            self._passcodeField.setText(app["secret"])
+        if app.get("custom_data"):
+            self._customDataPanel.setPairs(app["custom_data"])
+        if "hash_field" in app:
+            self._hashFieldName.setText(app["hash_field"])
+        c = app.get("crypto", {})
+        if c.get("algorithm"):
+            self._inlineCryptoAlgo.setSelectedItem(c["algorithm"])
+        if "key" in c:
+            self._inlineCryptoKey.setText(c["key"])
+        if "iv" in c:
+            self._inlineCryptoIv.setText(c["iv"])
+        if "field" in c:
+            self._inlineCryptoField.setText(c["field"])
+        # mode is managed automatically — do not set here
+        if ep and "keys_order" in ep:
+            self._keysField.setText(ep["keys_order"])
+            self._keysUserEdited = True
 
     def _onKeysManualEdit(self):
         """Mark that the user has manually edited the keys order field."""
@@ -1987,52 +1980,37 @@ class HashGenEditorTab(IMessageEditorTab):
         if not app:
             return
         try:
-            if app.get("algorithm"):
-                self._algoCombo.setSelectedItem(app["algorithm"])
-            if "secret" in app:
-                self._passcodeField.setText(app["secret"])
-            if app.get("custom_data"):
-                self._customDataPanel.setPairs(app["custom_data"])
-            if "hash_field" in app:
-                self._hashFieldName.setText(app["hash_field"])
-            # Crypto: set key/iv/field before mode to avoid spurious auto-decrypt
-            c = app.get("crypto", {})
-            if c.get("algorithm"):
-                self._inlineCryptoAlgo.setSelectedItem(c["algorithm"])
-            if "key" in c:
-                self._inlineCryptoKey.setText(c["key"])
-            if "iv" in c:
-                self._inlineCryptoIv.setText(c["iv"])
-            if "field" in c:
-                self._inlineCryptoField.setText(c["field"])
-            if c.get("mode"):
-                self._inlineCryptoMode.setSelectedItem(c["mode"])
-            # Try to match current URL path to an endpoint within this app
+            # Find matching endpoint for current URL
             path = getattr(self, '_requestPath', '')
-            endpoints = app.get("endpoints", {})
             matched_ep = None
-            for pat, ep in endpoints.items():
+            for pat, ep in app.get("endpoints", {}).items():
                 if pat and pat in path:
                     matched_ep = ep
                     break
-            if matched_ep and "keys_order" in matched_ep:
-                self._keysField.setText(matched_ep["keys_order"])
-                self._keysUserEdited = True
+            self._applyAppPresetToInlineUI(app, matched_ep)
             self._hashOutput.setText("Loaded preset: %s" % name)
             print("[CipherKit] Manually loaded preset: %s" % name)
         except Exception as e:
             print("[CipherKit] Load preset error: %s" % str(e))
 
+    @staticmethod
+    def _refill_preset_combo(combo, names):
+        """Repopulate a preset JComboBox, restoring prior selection if still present."""
+        current = str(combo.getSelectedItem())
+        combo.removeAllItems()
+        combo.addItem("(none)")
+        for n in names:
+            combo.addItem(n)
+        if current and current != "(none)":
+            combo.setSelectedItem(current)
+
     def _refreshInlinePresetCombo(self):
         """Refresh the inline preset combo box with current app names."""
         try:
-            current = str(self._inlinePresetCombo.getSelectedItem())
-            self._inlinePresetCombo.removeAllItems()
-            self._inlinePresetCombo.addItem("(none)")
-            for n in self._extender.preset_manager.get_all_names():
-                self._inlinePresetCombo.addItem(n)
-            if current and current != "(none)":
-                self._inlinePresetCombo.setSelectedItem(current)
+            self._refill_preset_combo(
+                self._inlinePresetCombo,
+                self._extender.preset_manager.get_all_names()
+            )
         except Exception as e:
             print("[CipherKit] Refresh inline combo error: %s" % str(e))
 
@@ -2119,40 +2097,13 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception as e:
             self._hashOutput.setText("[CRYPTO] Error: %s" % str(e))
 
-    def _onCryptoAndInject(self, event=None):
-        """
-        Run AES-CBC on the value of the named body field and inject result back.
-        - Encrypt mode: reads plaintext from the field, encrypts it, writes Base64 back
-        - Decrypt mode: reads Base64 from the field, decrypts it, writes plaintext back
-        """
-        try:
-            result = self._computeCrypto()
-            if not result or str(result).startswith("Error"):
-                self._hashOutput.setText("[CRYPTO] " + str(result))
-                return
-
-            body_str = self._bodyArea.getText().strip()
-            ct       = getattr(self, '_contentType', '')
-            data     = parse_body(body_str, ct)
-            field    = self._inlineCryptoField.getText().strip() or "data"
-            data[field] = str(result)
-            serialized  = serialize_body(data, body_str, ct)
-            self._bodyArea.setText(serialized)
-            self._bodyArea.setCaretPosition(0)
-            self._hashOutput.setText("[CRYPTO] " + str(result))
-        except Exception as e:
-            self._hashOutput.setText("[CRYPTO] Error: %s" % str(e))
-
     def _onAutoDecrypt(self):
         """Auto-decrypt the named field when switching to Crypto tab (Decrypt mode only).
         Silently clears the output and does nothing when required params are missing."""
         self._cryptoAutoMode = False
         self._cryptoDebounceTimer.stop()
-        mode = str(self._inlineCryptoMode.getSelectedItem())
-        if mode != "Decrypt":
-            self._hashOutput.setEditable(False)
-            self._hashOutput.setText("")
-            return
+        # Always force Decrypt — mode is managed automatically, never set externally
+        self._inlineCryptoMode.setSelectedItem("Decrypt")
         # Silently skip if required parameters are not yet filled in
         key   = self._inlineCryptoKey.getText().strip()
         field = self._inlineCryptoField.getText().strip()
@@ -2160,14 +2111,13 @@ class HashGenEditorTab(IMessageEditorTab):
             self._hashOutput.setEditable(False)
             self._hashOutput.setText("")
             return
-        # IV: only required for algorithms that need one; skip silently if empty
-        # (AesCbcEngine accepts None IV and derives one, so we allow empty IV here)
         try:
             result = self._computeCrypto()
             if result and not str(result).startswith("Error"):
                 self._hashOutput.setEditable(True)
                 self._hashOutput.setText(str(result))
                 self._cryptoAutoMode = True
+                self._lastEncryptedPlaintext = None  # fresh decrypt — allow next edit to encrypt
             else:
                 self._hashOutput.setEditable(False)
                 self._hashOutput.setText("")
@@ -2190,17 +2140,18 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception:
             pass
         # Silently skip if required parameters are missing
-        if not self._inlineCryptoKey.getText().strip():
+        key = self._inlineCryptoKey.getText().strip()
+        if not key:
             return
         try:
             plaintext = self._hashOutput.getText()
             if not plaintext:
                 return
-            key   = self._inlineCryptoKey.getText()
+            # Skip if plaintext hasn't changed since the last encrypt (prevents loops)
+            if plaintext == getattr(self, '_lastEncryptedPlaintext', None):
+                return
             iv    = self._inlineCryptoIv.getText().strip() or None
             field = self._inlineCryptoField.getText().strip() or "data"
-            if not key:
-                return
             algo    = str(self._inlineCryptoAlgo.getSelectedItem()) if hasattr(self, '_inlineCryptoAlgo') else "AES-CBC-128"
             snippet = self._extender.crypto_snippet_manager.get_snippet(algo)
             if snippet:
@@ -2212,6 +2163,7 @@ class HashGenEditorTab(IMessageEditorTab):
             data       = parse_body(body_str, ct)
             data[field] = str(encrypted)
             serialized  = serialize_body(data, body_str, ct)
+            self._lastEncryptedPlaintext = plaintext  # guard against re-encrypt loop
             # Update body without disrupting caret
             self._bodyArea.setText(serialized)
             self._bodyArea.setCaretPosition(0)
@@ -3013,14 +2965,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         print("[CipherKit] Preset updated: %s" % name)
 
     def _refreshPresetCombo(self):
-        """Refresh the preset combo box with current preset names."""
-        current = str(self._presetCombo.getSelectedItem())
-        self._presetCombo.removeAllItems()
-        self._presetCombo.addItem("(none)")
-        for n in self.preset_manager.get_all_names():
-            self._presetCombo.addItem(n)
-        if current and current != "(none)":
-            self._presetCombo.setSelectedItem(current)
+        """Refresh the main preset combo box with current preset names."""
+        HashGenEditorTab._refill_preset_combo(
+            self._presetCombo, self.preset_manager.get_all_names()
+        )
 
     def _refreshPresetSummary(self):
         """Refresh the Preset tab summary text area with the selected app's config."""
