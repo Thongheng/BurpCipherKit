@@ -1172,6 +1172,7 @@ class HashGenEditorTab(IMessageEditorTab):
         hashRow.add(hashBtnPanel, BorderLayout.EAST)
         hashConfigPanel.add(hashRow, hgbc)
 
+
         # ----------------------------------------------------------------
         # Crypto sub-tab panel
         # ----------------------------------------------------------------
@@ -1288,11 +1289,6 @@ class HashGenEditorTab(IMessageEditorTab):
         inlineFindBtn = JButton("Find Key Order", actionPerformed=self._onInlineKfFind)
         kfPanel.add(inlineFindBtn, kgbc)
 
-        # Add all sub-tabs
-        configTabs.addTab("Hash",       hashConfigPanel)
-        configTabs.addTab("Crypto",     cryptoConfigPanel)
-        configTabs.addTab("Key Finder", kfPanel)
-
         # ----------------------------------------------------------------
         # Preset sub-tab panel
         # ----------------------------------------------------------------
@@ -1397,13 +1393,15 @@ class HashGenEditorTab(IMessageEditorTab):
         outputWrap = JPanel(BorderLayout(0, 2))
         outputWrap.setMinimumSize(Dimension(0, 60))
 
-        # Header row: "Output:" label on left, checkbox on right
+        # Header row: label on left, checkbox on right
         outputHeader = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-        outputHeader.add(JLabel("Output: "))
+        self._outputLabel = JLabel("Hash Output: ")
+        outputHeader.add(self._outputLabel)
         self._autoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
         self._autoEncryptChk.setToolTipText(
             "When checked: editing the decrypted text automatically re-encrypts it back into the request body"
         )
+        self._autoEncryptChk.setVisible(False)  # hidden until Crypto tab is selected
         outputHeader.add(self._autoEncryptChk)
         outputWrap.add(outputHeader, BorderLayout.NORTH)
 
@@ -1486,12 +1484,16 @@ class HashGenEditorTab(IMessageEditorTab):
                 try:
                     idx = _outer._configTabs.getSelectedIndex()
                     if idx == 2:  # Key Finder
+                        _outer._outputLabel.setText("Hash Output: ")
+                        _outer._autoEncryptChk.setVisible(False)
                         _outer._cryptoAutoMode = False
                         _outer._cryptoDebounceTimer.stop()
                         _outer._hashOutput.setEditable(False)
                         _outer._cardLayout.show(centerPanel, "keyfinder")
                         _outer._onInlineKfParse()
                     elif idx == 3:  # Preset tab
+                        _outer._outputLabel.setText("Hash Output: ")
+                        _outer._autoEncryptChk.setVisible(False)
                         _outer._cryptoAutoMode = False
                         _outer._cryptoDebounceTimer.stop()
                         _outer._hashOutput.setEditable(False)
@@ -1500,11 +1502,24 @@ class HashGenEditorTab(IMessageEditorTab):
                     else:
                         _outer._cardLayout.show(centerPanel, "hashcrypto")
                         if idx == 1:  # Crypto tab
+                            _outer._outputLabel.setText("Crypto Output: ")
+                            _outer._autoEncryptChk.setVisible(True)
                             _outer._onAutoDecrypt()
                         else:  # Hash tab (idx == 0)
-                            _outer._cryptoAutoMode = False
-                            _outer._cryptoDebounceTimer.stop()
-                            _outer._hashOutput.setEditable(False)
+                            try:
+                                mode = str(_outer._extender._activeOutputCombo.getSelectedItem())
+                            except Exception:
+                                mode = "Hash"
+                            if mode == "Crypto":
+                                _outer._outputLabel.setText("Crypto Output: ")
+                                _outer._autoEncryptChk.setVisible(True)
+                                _outer._onAutoDecrypt()
+                            else:
+                                _outer._outputLabel.setText("Hash Output: ")
+                                _outer._autoEncryptChk.setVisible(False)
+                                _outer._cryptoAutoMode = False
+                                _outer._cryptoDebounceTimer.stop()
+                                _outer._hashOutput.setEditable(False)
                 except Exception:
                     pass
         configTabs.addChangeListener(_TabListener())
@@ -1853,12 +1868,21 @@ class HashGenEditorTab(IMessageEditorTab):
 
     def _onGenerate(self, event=None):
         result, debug_log = self._computeHash()
-        self._hashOutput.setText("[HASH] " + str(result))
+        try:
+            crypto_output_mode = str(self._extender._activeOutputCombo.getSelectedItem()) == "Crypto"
+        except Exception:
+            crypto_output_mode = False
+        if not crypto_output_mode:
+            self._hashOutput.setText("[HASH] " + str(result))
 
     def _onGenerateAndInject(self, event=None):
         result, debug_log = self._computeHash()
+        # Determine if Hash tab output is in Crypto mode (output area shows decrypted text)
+        try:
+            crypto_output_mode = str(self._extender._activeOutputCombo.getSelectedItem()) == "Crypto"
+        except Exception:
+            crypto_output_mode = False
         if result and not str(result).startswith("Error"):
-            self._hashOutput.setText("[HASH] " + str(result))
             body_str = self._bodyArea.getText().strip()
             try:
                 ct = getattr(self, '_contentType', '')
@@ -1868,10 +1892,14 @@ class HashGenEditorTab(IMessageEditorTab):
                 serialized = serialize_body(data, body_str, ct)
                 self._bodyArea.setText(serialized)
                 self._bodyArea.setCaretPosition(0)
+                # Only update the output area when NOT in Crypto mode
+                if not crypto_output_mode:
+                    self._hashOutput.setText("[HASH] " + str(result))
             except Exception as e:
                 self._hashOutput.setText("Error injecting hash: %s" % str(e))
         else:
-            self._hashOutput.setText(str(result))
+            if not crypto_output_mode:
+                self._hashOutput.setText(str(result))
 
     def _onInlineSavePreset(self, event=None):
         """Save current config as an app preset + endpoint.
@@ -2152,8 +2180,15 @@ class HashGenEditorTab(IMessageEditorTab):
         """Debounced: encrypt the plaintext in Output and inject back into the body field."""
         if not self._cryptoAutoMode:
             return
+        # Check local auto-encrypt checkbox (Crypto tab only; Hash tab inherits the state)
         if not self._autoEncryptChk.isSelected():
             return
+        # Check global session checkbox in main tab
+        try:
+            if not self._extender._globalAutoEncryptChk.isSelected():
+                return
+        except Exception:
+            pass
         # Silently skip if required parameters are missing
         if not self._inlineCryptoKey.getText().strip():
             return
@@ -2416,6 +2451,24 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._tabbedPane.addTab("Hash Editor", editorPanel)
         self._tabbedPane.addTab("Crypto Editor", cryptoEditorPanel)
         self._tabbedPane.addTab("Preset", presetPanel)
+
+        # Global session-level settings bar (persists until Burp is restarted)
+        globalBar = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
+        # Active output mode: controls what the Hash tab's output shows
+        globalBar.add(JLabel("Hash tab output:"))
+        self._activeOutputCombo = JComboBox(["Hash", "Crypto"])
+        self._activeOutputCombo.setToolTipText(
+            "Hash: output shows the generated hash value\n"
+            "Crypto: output shows decrypted field value (editable, auto-encrypts on change)"
+        )
+        globalBar.add(self._activeOutputCombo)
+        # Global auto-encrypt toggle
+        self._globalAutoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
+        self._globalAutoEncryptChk.setToolTipText(
+            "Session-wide toggle: uncheck to disable auto-encrypt in all CipherKit request tabs"
+        )
+        globalBar.add(self._globalAutoEncryptChk)
+        self._mainPanel.add(globalBar, BorderLayout.SOUTH)
 
     # -------------------------------------------------------------------------
     # Generator Tab
