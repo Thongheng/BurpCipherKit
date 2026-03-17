@@ -1297,40 +1297,80 @@ class HashGenEditorTab(IMessageEditorTab):
         configTabs.addTab("Crypto",     cryptoConfigPanel)
         configTabs.addTab("Key Finder", kfPanel)
 
-        self._configTabs = configTabs
+        # ----------------------------------------------------------------
+        # Preset sub-tab panel
+        # ----------------------------------------------------------------
+        presetTabPanel = JPanel(GridBagLayout())
+        presetTabPanel.setBorder(EmptyBorder(6, 6, 6, 6))
+        pgbc = GridBagConstraints()
+        pgbc.insets = Insets(3, 4, 3, 4)
+        pgbc.anchor = GridBagConstraints.WEST
 
-        # ================================================================
-        # NORTH: Preset row (dropdown + Load + Save) above the config tabs
-        # ================================================================
-        presetBarPanel = JPanel(BorderLayout(0, 0))
-        presetBarPanel.setBorder(EmptyBorder(0, 0, 3, 0))
+        # Row 0: App selector + Load + Delete
+        pgbc.gridy = 0; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        presetTabPanel.add(JLabel("App:"), pgbc)
+        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        _pt_appRow = JPanel(BorderLayout(4, 0))
+        _pt_preset_names = ["(none)"] + extender.preset_manager.get_all_names()
+        self._inlinePresetCombo = JComboBox(_pt_preset_names)
+        self._inlinePresetCombo.setToolTipText("Select app preset to load (algorithm, secret, crypto settings)")
+        _pt_appRow.add(self._inlinePresetCombo, BorderLayout.CENTER)
+        _pt_appBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
+        _pt_loadBtn = JButton("Load", actionPerformed=self._onInlineLoadPreset)
+        _pt_loadBtn.setToolTipText("Load selected app preset into all config fields")
+        _pt_delBtn  = JButton("Delete App", actionPerformed=self._onInlineDeletePreset)
+        _pt_delBtn.setToolTipText("Delete this app preset and all its endpoints")
+        _pt_appBtns.add(_pt_loadBtn)
+        _pt_appBtns.add(_pt_delBtn)
+        _pt_appRow.add(_pt_appBtns, BorderLayout.EAST)
+        presetTabPanel.add(_pt_appRow, pgbc)
 
-        presetRowPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-        presetRowPanel.add(JLabel("App Preset:"))
-        _preset_names = ["(none)"] + extender.preset_manager.get_all_names()
-        self._inlinePresetCombo = JComboBox(_preset_names)
-        self._inlinePresetCombo.setPreferredSize(Dimension(160, 22))
-        self._inlinePresetCombo.setToolTipText("Select an app preset to load its shared config into all fields")
-        presetRowPanel.add(self._inlinePresetCombo)
+        # Row 1: Current URL (read-only info)
+        pgbc.gridy = 1; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        presetTabPanel.add(JLabel("Current URL:"), pgbc)
+        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineUrlLabel = JTextField("")
+        self._inlineUrlLabel.setEditable(False)
+        self._inlineUrlLabel.setForeground(Color(80, 80, 80))
+        presetTabPanel.add(self._inlineUrlLabel, pgbc)
 
-        _loadPresetBtn = JButton("Load", actionPerformed=self._onInlineLoadPreset)
-        _loadPresetBtn.setToolTipText("Load selected app preset (algorithm, secret, crypto settings)")
-        presetRowPanel.add(_loadPresetBtn)
-
-        _saveEpBtn = JButton("Save Endpoint", actionPerformed=self._onInlineSavePreset)
-        _saveEpBtn.setToolTipText(
-            "Save current keys order under the selected app preset for this URL.\n"
-            "Only needs to be done once per endpoint — auto-loads next time."
+        # Row 2: Endpoint keys order (editable, linked to main keys field)
+        pgbc.gridy = 2; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        presetTabPanel.add(JLabel("Keys Order:"), pgbc)
+        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        _pt_epRow = JPanel(BorderLayout(4, 0))
+        self._inlineEpKeysField = JTextField("")
+        self._inlineEpKeysField.setToolTipText("Keys order for this endpoint (comma-separated)")
+        _pt_epRow.add(self._inlineEpKeysField, BorderLayout.CENTER)
+        _pt_saveEpBtn = JButton("Save Endpoint", actionPerformed=self._onInlineSavePreset)
+        _pt_saveEpBtn.setToolTipText(
+            "Save this URL + keys order under the selected app.\n"
+            "Do this once per endpoint — it auto-loads next time."
         )
-        presetRowPanel.add(_saveEpBtn)
+        _pt_epRow.add(_pt_saveEpBtn, BorderLayout.EAST)
+        presetTabPanel.add(_pt_epRow, pgbc)
 
-        presetBarPanel.add(presetRowPanel, BorderLayout.WEST)
+        # Row 3: Status / last auto-load info
+        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        presetTabPanel.add(JLabel("Status:"), pgbc)
+        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlinePresetStatus = JTextField("No preset loaded")
+        self._inlinePresetStatus.setEditable(False)
+        self._inlinePresetStatus.setForeground(Color(80, 80, 80))
+        presetTabPanel.add(self._inlinePresetStatus, pgbc)
 
-        # Wrap configTabs + preset bar together in the NORTH slot
-        _northWrapper = JPanel(BorderLayout(0, 0))
-        _northWrapper.add(presetBarPanel, BorderLayout.NORTH)
-        _northWrapper.add(configTabs, BorderLayout.CENTER)
-        self._panel.add(_northWrapper, BorderLayout.NORTH)
+        # Filler row to push content to top
+        pgbc.gridy = 4; pgbc.gridx = 0; pgbc.gridwidth = 2
+        pgbc.weighty = 1.0; pgbc.fill = GridBagConstraints.VERTICAL
+        presetTabPanel.add(JPanel(), pgbc)
+
+        configTabs.addTab("Hash",       hashConfigPanel)
+        configTabs.addTab("Crypto",     cryptoConfigPanel)
+        configTabs.addTab("Key Finder", kfPanel)
+        configTabs.addTab("Preset",     presetTabPanel)
+
+        self._configTabs = configTabs
+        self._panel.add(configTabs, BorderLayout.NORTH)
 
         # ================================================================
         # CENTER: CardLayout — switches between Hash/Crypto view and KF view
@@ -1443,11 +1483,17 @@ class HashGenEditorTab(IMessageEditorTab):
                         _outer._hashOutput.setEditable(False)
                         _outer._cardLayout.show(centerPanel, "keyfinder")
                         _outer._onInlineKfParse()
+                    elif idx == 3:  # Preset tab
+                        _outer._cryptoAutoMode = False
+                        _outer._cryptoDebounceTimer.stop()
+                        _outer._hashOutput.setEditable(False)
+                        _outer._cardLayout.show(centerPanel, "hashcrypto")
+                        _outer._onPresetTabFocus()
                     else:
                         _outer._cardLayout.show(centerPanel, "hashcrypto")
                         if idx == 1:  # Crypto tab
                             _outer._onAutoDecrypt()
-                        else:  # Hash tab
+                        else:  # Hash tab (idx == 0)
                             _outer._cryptoAutoMode = False
                             _outer._cryptoDebounceTimer.stop()
                             _outer._hashOutput.setEditable(False)
@@ -1548,6 +1594,15 @@ class HashGenEditorTab(IMessageEditorTab):
             if ep and "keys_order" in ep:
                 self._keysField.setText(ep["keys_order"])
                 self._keysUserEdited = True
+            # Update Preset tab UI
+            try:
+                self._inlinePresetCombo.setSelectedItem(app_name)
+                self._inlinePresetStatus.setText("Auto-loaded: %s / %s" % (app_name, pattern))
+                self._inlineUrlLabel.setText(getattr(self, '_requestPath', ''))
+                if ep:
+                    self._inlineEpKeysField.setText(ep.get("keys_order", ""))
+            except Exception:
+                pass
             print("[CipherKit] Auto-loaded preset: %s / %s" % (app_name, pattern))
             return True
         except Exception as e:
@@ -1822,24 +1877,27 @@ class HashGenEditorTab(IMessageEditorTab):
 
     def _onInlineSavePreset(self, event=None):
         """Save current config as an app preset + endpoint.
-        Pre-fills the app name from the inline preset combo if one is selected."""
+        Reads the app name from the combo and keys order from the Preset tab field."""
         path = getattr(self, '_requestPath', '')
 
-        # Pre-fill app name from the combo if one is already selected
+        # App name: use combo selection or ask
         selected_combo = str(self._inlinePresetCombo.getSelectedItem())
-        default_app = selected_combo if selected_combo != "(none)" else ""
-
         existing = self._extender.preset_manager.get_all_names()
-        choices = existing + ["[ New app... ]"]
-        app_name = JOptionPane.showInputDialog(
-            self._panel, "App preset name (select existing or type new):", "Save Endpoint",
-            JOptionPane.PLAIN_MESSAGE, None,
-            choices if choices else None,
-            default_app if default_app in existing else (existing[0] if existing else "")
-        )
-        if not app_name or not str(app_name).strip():
-            return
-        app_name = str(app_name).strip()
+
+        if selected_combo and selected_combo != "(none)":
+            app_name = selected_combo
+        else:
+            choices = existing + ["[ New app... ]"]
+            app_name = JOptionPane.showInputDialog(
+                self._panel, "App preset name (select existing or type new):", "Save Endpoint",
+                JOptionPane.PLAIN_MESSAGE, None,
+                choices if choices else None,
+                existing[0] if existing else ""
+            )
+            if not app_name or not str(app_name).strip():
+                return
+            app_name = str(app_name).strip()
+
         if app_name == "[ New app... ]":
             app_name = JOptionPane.showInputDialog(
                 self._panel, "New app name:", "Save Endpoint",
@@ -1849,11 +1907,18 @@ class HashGenEditorTab(IMessageEditorTab):
                 return
             app_name = str(app_name).strip()
 
+        # URL pattern: pre-fill from Preset tab URL label or current path
         pattern = JOptionPane.showInputDialog(
             self._panel, "URL pattern for this endpoint (e.g. /api/user):",
             "URL Pattern", JOptionPane.PLAIN_MESSAGE, None, None, path
         )
         pattern = str(pattern).strip() if pattern else ""
+
+        # Keys order: prefer Preset tab field (user may have edited it there)
+        try:
+            keys_order = self._inlineEpKeysField.getText().strip() or self._keysField.getText().strip()
+        except Exception:
+            keys_order = self._keysField.getText().strip()
 
         # Save app-level config (algorithm, secret, crypto — shared across endpoints)
         app_data = {
@@ -1870,12 +1935,9 @@ class HashGenEditorTab(IMessageEditorTab):
             },
         }
         self._extender.preset_manager.save_app(app_name, app_data)
-        # Save this endpoint's keys order under the app
         if pattern:
-            self._extender.preset_manager.save_endpoint(
-                app_name, pattern, self._keysField.getText().strip()
-            )
-        # Refresh both combos
+            self._extender.preset_manager.save_endpoint(app_name, pattern, keys_order)
+
         self._refreshInlinePresetCombo()
         self._inlinePresetCombo.setSelectedItem(app_name)
         try:
@@ -1883,6 +1945,10 @@ class HashGenEditorTab(IMessageEditorTab):
         except:
             pass
         label = "%s%s" % (app_name, (" / " + pattern) if pattern else "")
+        try:
+            self._inlinePresetStatus.setText("Saved: %s" % label)
+        except Exception:
+            pass
         self._hashOutput.setText("Saved: %s" % label)
         print("[CipherKit] Preset saved: %s" % label)
 
@@ -1939,11 +2005,39 @@ class HashGenEditorTab(IMessageEditorTab):
             self._inlinePresetCombo.addItem("(none)")
             for n in self._extender.preset_manager.get_all_names():
                 self._inlinePresetCombo.addItem(n)
-            # Re-select previous item if it still exists
             if current and current != "(none)":
                 self._inlinePresetCombo.setSelectedItem(current)
         except Exception as e:
             print("[CipherKit] Refresh inline combo error: %s" % str(e))
+
+    def _onPresetTabFocus(self):
+        """Populate the Preset tab fields when the user switches to it."""
+        try:
+            path = getattr(self, '_requestPath', '')
+            self._inlineUrlLabel.setText(path or "(no request loaded)")
+            # Sync keys field from Hash tab into the Preset tab keys field
+            self._inlineEpKeysField.setText(self._keysField.getText())
+        except Exception as e:
+            print("[CipherKit] Preset tab focus error: %s" % str(e))
+
+    def _onInlineDeletePreset(self, event=None):
+        """Delete the selected app preset."""
+        name = str(self._inlinePresetCombo.getSelectedItem())
+        if name == "(none)":
+            return
+        confirm = JOptionPane.showConfirmDialog(
+            self._panel, "Delete app preset '%s' and all its endpoints?" % name,
+            "Delete Preset", JOptionPane.YES_NO_OPTION
+        )
+        if confirm == JOptionPane.YES_OPTION:
+            self._extender.preset_manager.delete_app(name)
+            self._refreshInlinePresetCombo()
+            try:
+                self._extender._refreshPresetCombo()
+            except:
+                pass
+            self._inlinePresetStatus.setText("Deleted: %s" % name)
+            print("[CipherKit] Preset deleted: %s" % name)
 
     def _onCryptoRun(self, event=None):
         """Run AES-CBC encrypt/decrypt on the named body field and show result."""
