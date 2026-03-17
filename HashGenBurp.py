@@ -9,7 +9,7 @@ from burp import (
 )
 
 from javax.swing import (
-    JPanel, JLabel, JTextField, JTextArea, JButton, JComboBox,
+    JPanel, JLabel, JTextField, JTextArea, JButton, JComboBox, JCheckBox,
     JScrollPane, JTabbedPane, JSplitPane, JOptionPane, BorderFactory,
     SwingUtilities, BoxLayout, Box
 )
@@ -1164,14 +1164,11 @@ class HashGenEditorTab(IMessageEditorTab):
         self._hashFieldName.setPreferredSize(Dimension(70, 22))
         hashRow.add(self._hashFieldName, BorderLayout.CENTER)
         hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
-        self._genBtn    = JButton("Generate",   actionPerformed=self._onGenerate)
+        self._genBtn    = JButton("Generate",     actionPerformed=self._onGenerate)
         self._injectBtn = JButton("Gen & Inject", actionPerformed=self._onGenerateAndInject)
         self._injectBtn.setToolTipText("Generate hash and inject into the request body")
-        self._savePresetBtn = JButton("Save Preset", actionPerformed=self._onInlineSavePreset)
-        self._savePresetBtn.setToolTipText("Save current config as a preset for this endpoint")
         hashBtnPanel.add(self._genBtn)
         hashBtnPanel.add(self._injectBtn)
-        hashBtnPanel.add(self._savePresetBtn)
         hashRow.add(hashBtnPanel, BorderLayout.EAST)
         hashConfigPanel.add(hashRow, hgbc)
 
@@ -1301,7 +1298,39 @@ class HashGenEditorTab(IMessageEditorTab):
         configTabs.addTab("Key Finder", kfPanel)
 
         self._configTabs = configTabs
-        self._panel.add(configTabs, BorderLayout.NORTH)
+
+        # ================================================================
+        # NORTH: Preset row (dropdown + Load + Save) above the config tabs
+        # ================================================================
+        presetBarPanel = JPanel(BorderLayout(0, 0))
+        presetBarPanel.setBorder(EmptyBorder(0, 0, 3, 0))
+
+        presetRowPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+        presetRowPanel.add(JLabel("App Preset:"))
+        _preset_names = ["(none)"] + extender.preset_manager.get_all_names()
+        self._inlinePresetCombo = JComboBox(_preset_names)
+        self._inlinePresetCombo.setPreferredSize(Dimension(160, 22))
+        self._inlinePresetCombo.setToolTipText("Select an app preset to load its shared config into all fields")
+        presetRowPanel.add(self._inlinePresetCombo)
+
+        _loadPresetBtn = JButton("Load", actionPerformed=self._onInlineLoadPreset)
+        _loadPresetBtn.setToolTipText("Load selected app preset (algorithm, secret, crypto settings)")
+        presetRowPanel.add(_loadPresetBtn)
+
+        _saveEpBtn = JButton("Save Endpoint", actionPerformed=self._onInlineSavePreset)
+        _saveEpBtn.setToolTipText(
+            "Save current keys order under the selected app preset for this URL.\n"
+            "Only needs to be done once per endpoint — auto-loads next time."
+        )
+        presetRowPanel.add(_saveEpBtn)
+
+        presetBarPanel.add(presetRowPanel, BorderLayout.WEST)
+
+        # Wrap configTabs + preset bar together in the NORTH slot
+        _northWrapper = JPanel(BorderLayout(0, 0))
+        _northWrapper.add(presetBarPanel, BorderLayout.NORTH)
+        _northWrapper.add(configTabs, BorderLayout.CENTER)
+        self._panel.add(_northWrapper, BorderLayout.NORTH)
 
         # ================================================================
         # CENTER: CardLayout — switches between Hash/Crypto view and KF view
@@ -1325,8 +1354,22 @@ class HashGenEditorTab(IMessageEditorTab):
         bodyScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         bodyWrap.add(bodyScroll, BorderLayout.CENTER)
 
+        # Fix: give bodyWrap a minimum size so JSplitPane can never collapse it to zero
+        bodyWrap.setMinimumSize(Dimension(0, 80))
+
         outputWrap = JPanel(BorderLayout(0, 2))
-        outputWrap.add(JLabel("Output:"), BorderLayout.NORTH)
+        outputWrap.setMinimumSize(Dimension(0, 60))
+
+        # Header row: "Output:" label on left, checkbox on right
+        outputHeader = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        outputHeader.add(JLabel("Output: "))
+        self._autoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
+        self._autoEncryptChk.setToolTipText(
+            "When checked: editing the decrypted text automatically re-encrypts it back into the request body"
+        )
+        outputHeader.add(self._autoEncryptChk)
+        outputWrap.add(outputHeader, BorderLayout.NORTH)
+
         self._hashOutput = JTextArea(3, 60)
         self._hashOutput.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._hashOutput.setEditable(False)
@@ -1334,7 +1377,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._hashOutput.setWrapStyleWord(True)
         outputScroll = JScrollPane(self._hashOutput)
         outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        outputScroll.setPreferredSize(Dimension(0, 80))
+        outputScroll.setPreferredSize(Dimension(0, 70))
         outputWrap.add(outputScroll, BorderLayout.CENTER)
 
         # ---- Debounce timer for auto-encrypt (fires 800 ms after last keystroke) ----
@@ -1778,22 +1821,28 @@ class HashGenEditorTab(IMessageEditorTab):
             self._hashOutput.setText(str(result))
 
     def _onInlineSavePreset(self, event=None):
-        """Quick-save current inline config as an app preset + endpoint."""
+        """Save current config as an app preset + endpoint.
+        Pre-fills the app name from the inline preset combo if one is selected."""
         path = getattr(self, '_requestPath', '')
+
+        # Pre-fill app name from the combo if one is already selected
+        selected_combo = str(self._inlinePresetCombo.getSelectedItem())
+        default_app = selected_combo if selected_combo != "(none)" else ""
+
         existing = self._extender.preset_manager.get_all_names()
         choices = existing + ["[ New app... ]"]
         app_name = JOptionPane.showInputDialog(
-            self._panel, "App preset name (select existing or type new):", "Save Preset",
+            self._panel, "App preset name (select existing or type new):", "Save Endpoint",
             JOptionPane.PLAIN_MESSAGE, None,
             choices if choices else None,
-            existing[0] if existing else ""
+            default_app if default_app in existing else (existing[0] if existing else "")
         )
         if not app_name or not str(app_name).strip():
             return
         app_name = str(app_name).strip()
         if app_name == "[ New app... ]":
             app_name = JOptionPane.showInputDialog(
-                self._panel, "New app name:", "Save Preset",
+                self._panel, "New app name:", "Save Endpoint",
                 JOptionPane.PLAIN_MESSAGE, None, None, ""
             )
             if not app_name or not str(app_name).strip():
@@ -1806,6 +1855,7 @@ class HashGenEditorTab(IMessageEditorTab):
         )
         pattern = str(pattern).strip() if pattern else ""
 
+        # Save app-level config (algorithm, secret, crypto — shared across endpoints)
         app_data = {
             "algorithm":   str(self._algoCombo.getSelectedItem()),
             "secret":      self._passcodeField.getText(),
@@ -1820,17 +1870,80 @@ class HashGenEditorTab(IMessageEditorTab):
             },
         }
         self._extender.preset_manager.save_app(app_name, app_data)
+        # Save this endpoint's keys order under the app
         if pattern:
             self._extender.preset_manager.save_endpoint(
                 app_name, pattern, self._keysField.getText().strip()
             )
+        # Refresh both combos
+        self._refreshInlinePresetCombo()
+        self._inlinePresetCombo.setSelectedItem(app_name)
         try:
             self._extender._refreshPresetCombo()
         except:
             pass
         label = "%s%s" % (app_name, (" / " + pattern) if pattern else "")
-        self._hashOutput.setText("Preset saved: %s" % label)
+        self._hashOutput.setText("Saved: %s" % label)
         print("[CipherKit] Preset saved: %s" % label)
+
+    def _onInlineLoadPreset(self, event=None):
+        """Manually load the selected app preset into all config fields."""
+        name = str(self._inlinePresetCombo.getSelectedItem())
+        if name == "(none)":
+            return
+        app = self._extender.preset_manager.get_app(name)
+        if not app:
+            return
+        try:
+            if app.get("algorithm"):
+                self._algoCombo.setSelectedItem(app["algorithm"])
+            if "secret" in app:
+                self._passcodeField.setText(app["secret"])
+            if app.get("custom_data"):
+                self._customDataPanel.setPairs(app["custom_data"])
+            if "hash_field" in app:
+                self._hashFieldName.setText(app["hash_field"])
+            # Crypto: set key/iv/field before mode to avoid spurious auto-decrypt
+            c = app.get("crypto", {})
+            if c.get("algorithm"):
+                self._inlineCryptoAlgo.setSelectedItem(c["algorithm"])
+            if "key" in c:
+                self._inlineCryptoKey.setText(c["key"])
+            if "iv" in c:
+                self._inlineCryptoIv.setText(c["iv"])
+            if "field" in c:
+                self._inlineCryptoField.setText(c["field"])
+            if c.get("mode"):
+                self._inlineCryptoMode.setSelectedItem(c["mode"])
+            # Try to match current URL path to an endpoint within this app
+            path = getattr(self, '_requestPath', '')
+            endpoints = app.get("endpoints", {})
+            matched_ep = None
+            for pat, ep in endpoints.items():
+                if pat and pat in path:
+                    matched_ep = ep
+                    break
+            if matched_ep and "keys_order" in matched_ep:
+                self._keysField.setText(matched_ep["keys_order"])
+                self._keysUserEdited = True
+            self._hashOutput.setText("Loaded preset: %s" % name)
+            print("[CipherKit] Manually loaded preset: %s" % name)
+        except Exception as e:
+            print("[CipherKit] Load preset error: %s" % str(e))
+
+    def _refreshInlinePresetCombo(self):
+        """Refresh the inline preset combo box with current app names."""
+        try:
+            current = str(self._inlinePresetCombo.getSelectedItem())
+            self._inlinePresetCombo.removeAllItems()
+            self._inlinePresetCombo.addItem("(none)")
+            for n in self._extender.preset_manager.get_all_names():
+                self._inlinePresetCombo.addItem(n)
+            # Re-select previous item if it still exists
+            if current and current != "(none)":
+                self._inlinePresetCombo.setSelectedItem(current)
+        except Exception as e:
+            print("[CipherKit] Refresh inline combo error: %s" % str(e))
 
     def _onCryptoRun(self, event=None):
         """Run AES-CBC encrypt/decrypt on the named body field and show result."""
@@ -1865,37 +1978,46 @@ class HashGenEditorTab(IMessageEditorTab):
             self._hashOutput.setText("[CRYPTO] Error: %s" % str(e))
 
     def _onAutoDecrypt(self):
-        """Auto-decrypt the named field when switching to Crypto tab (Decrypt mode only)."""
+        """Auto-decrypt the named field when switching to Crypto tab (Decrypt mode only).
+        Silently clears the output and does nothing when required params are missing."""
         self._cryptoAutoMode = False
         self._cryptoDebounceTimer.stop()
         mode = str(self._inlineCryptoMode.getSelectedItem())
         if mode != "Decrypt":
-            # In Encrypt mode just keep output read-only and clear it
             self._hashOutput.setEditable(False)
             self._hashOutput.setText("")
             return
-        key = self._inlineCryptoKey.getText()
-        if not key:
+        # Silently skip if required parameters are not yet filled in
+        key   = self._inlineCryptoKey.getText().strip()
+        field = self._inlineCryptoField.getText().strip()
+        if not key or not field:
             self._hashOutput.setEditable(False)
-            self._hashOutput.setText("[Auto-decrypt] Key is required.")
+            self._hashOutput.setText("")
             return
+        # IV: only required for algorithms that need one; skip silently if empty
+        # (AesCbcEngine accepts None IV and derives one, so we allow empty IV here)
         try:
             result = self._computeCrypto()
             if result and not str(result).startswith("Error"):
-                # Set text without triggering the debounce listener
                 self._hashOutput.setEditable(True)
                 self._hashOutput.setText(str(result))
-                self._cryptoAutoMode = True  # now enable auto-encrypt on edits
+                self._cryptoAutoMode = True
             else:
                 self._hashOutput.setEditable(False)
-                self._hashOutput.setText(str(result))
+                self._hashOutput.setText("")
         except Exception as e:
             self._hashOutput.setEditable(False)
-            self._hashOutput.setText("[Auto-decrypt] Error: %s" % str(e))
+            self._hashOutput.setText("")
+            print("[CipherKit] Auto-decrypt error: %s" % str(e))
 
     def _onAutoEncrypt(self):
         """Debounced: encrypt the plaintext in Output and inject back into the body field."""
         if not self._cryptoAutoMode:
+            return
+        if not self._autoEncryptChk.isSelected():
+            return
+        # Silently skip if required parameters are missing
+        if not self._inlineCryptoKey.getText().strip():
             return
         try:
             plaintext = self._hashOutput.getText()
