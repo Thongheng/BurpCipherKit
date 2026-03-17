@@ -1091,6 +1091,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._headerBytes    = None
         self._contentType    = ""
         self._keysUserEdited = False
+        self._lastHashText   = ""  # saved hash result; restored when returning to Hash tab
 
         # Fonts
         monoFont  = Font("Monospaced", Font.PLAIN, 12)
@@ -1485,6 +1486,7 @@ class HashGenEditorTab(IMessageEditorTab):
                         _outer._cryptoAutoMode = False
                         _outer._cryptoDebounceTimer.stop()
                         _outer._hashOutput.setEditable(False)
+                        _outer._hashOutput.setText(_outer._lastHashText)
                         _outer._cardLayout.show(centerPanel, "keyfinder")
                         _outer._onInlineKfParse()
                     elif idx == 3:  # Preset tab
@@ -1493,6 +1495,7 @@ class HashGenEditorTab(IMessageEditorTab):
                         _outer._cryptoAutoMode = False
                         _outer._cryptoDebounceTimer.stop()
                         _outer._hashOutput.setEditable(False)
+                        _outer._hashOutput.setText(_outer._lastHashText)
                         _outer._cardLayout.show(centerPanel, "preset")
                         _outer._onPresetTabFocus()
                     else:
@@ -1516,6 +1519,8 @@ class HashGenEditorTab(IMessageEditorTab):
                                 _outer._cryptoAutoMode = False
                                 _outer._cryptoDebounceTimer.stop()
                                 _outer._hashOutput.setEditable(False)
+                                # Restore last hash result so crypto output doesn't bleed in
+                                _outer._hashOutput.setText(_outer._lastHashText)
                 except Exception:
                     pass
         configTabs.addChangeListener(_TabListener())
@@ -1866,7 +1871,9 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception:
             crypto_output_mode = False
         if not crypto_output_mode:
-            self._hashOutput.setText("[HASH] " + str(result))
+            text = "[HASH] " + str(result)
+            self._lastHashText = text
+            self._hashOutput.setText(text)
 
     def _onGenerateAndInject(self, event=None):
         result, debug_log = self._computeHash()
@@ -1887,11 +1894,14 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._bodyArea.setCaretPosition(0)
                 # Only update the output area when NOT in Crypto mode
                 if not crypto_output_mode:
-                    self._hashOutput.setText("[HASH] " + str(result))
+                    text = "[HASH] " + str(result)
+                    self._lastHashText = text
+                    self._hashOutput.setText(text)
             except Exception as e:
                 self._hashOutput.setText("Error injecting hash: %s" % str(e))
         else:
             if not crypto_output_mode:
+                self._lastHashText = str(result)
                 self._hashOutput.setText(str(result))
 
     def _onInlineSavePreset(self, event=None):
