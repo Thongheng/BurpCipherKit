@@ -685,8 +685,8 @@ class CryptoSnippetEngine:
 # Preset Manager: save/load per-API configurations
 # =============================================================================
 class PresetManager:
-    """Manages named presets (hash + crypto config) stored in a JSON file.
-    Each preset can have a match_pattern for auto-loading by URL path."""
+    """Manages app-level presets stored in a JSON file.
+    Each app preset holds shared config + per-endpoint keys_order entries."""
 
     def __init__(self, filepath):
         self.filepath = filepath
@@ -700,7 +700,27 @@ class PresetManager:
             return
         try:
             with open(self.filepath, 'r') as f:
-                self.presets = json.load(f)
+                data = json.load(f)
+            # Migrate old flat format (has "match_pattern" key at app level)
+            migrated = {}
+            for name, app in data.items():
+                if "match_pattern" in app:
+                    pattern = app.get("match_pattern", "")
+                    h = app.get("hash", {})
+                    c = app.get("crypto", {})
+                    migrated[name] = {
+                        "algorithm":   h.get("algorithm", ""),
+                        "secret":      h.get("secret", ""),
+                        "custom_data": h.get("custom_data", {}),
+                        "hash_field":  h.get("hash_field", "hash"),
+                        "crypto":      c,
+                        "endpoints":   {pattern: {"keys_order": h.get("keys_order", "")}} if pattern else {},
+                    }
+                else:
+                    migrated[name] = app
+            self.presets = migrated
+            if migrated != data:
+                self.save()
         except Exception as e:
             print("[CipherKit] Error loading presets: %s" % str(e))
             self.presets = {}
@@ -714,28 +734,41 @@ class PresetManager:
             print("[CipherKit] Error saving presets: %s" % str(e))
             return False
 
-    def get_preset(self, name):
-        return self.presets.get(name)
-
     def get_all_names(self):
         return list(self.presets.keys())
 
-    def save_preset(self, name, data):
+    def get_app(self, name):
+        return self.presets.get(name)
+
+    def save_app(self, name, data):
+        """Save or update app-level config, preserving existing endpoints."""
+        if name in self.presets:
+            data["endpoints"] = self.presets[name].get("endpoints", {})
+        else:
+            data.setdefault("endpoints", {})
         self.presets[name] = data
         self.save()
 
-    def delete_preset(self, name):
+    def save_endpoint(self, app_name, url_pattern, keys_order):
+        """Add or update a single endpoint's keys_order under an app."""
+        if app_name not in self.presets:
+            self.presets[app_name] = {"endpoints": {}}
+        self.presets[app_name].setdefault("endpoints", {})
+        self.presets[app_name]["endpoints"][url_pattern] = {"keys_order": keys_order}
+        self.save()
+
+    def delete_app(self, name):
         if name in self.presets:
             del self.presets[name]
             self.save()
 
-    def find_by_pattern(self, url_path):
-        """Return (name, preset) for the first preset whose match_pattern is in url_path."""
-        for name, preset in self.presets.items():
-            pattern = preset.get("match_pattern", "")
-            if pattern and pattern in url_path:
-                return (name, preset)
-        return (None, None)
+    def find_by_url(self, url_path):
+        """Return (app_name, app_data, url_pattern, endpoint_data) for first matching endpoint."""
+        for app_name, app in self.presets.items():
+            for pattern, ep in app.get("endpoints", {}).items():
+                if pattern and pattern in url_path:
+                    return (app_name, app, pattern, ep)
+        return (None, None, None, None)
 
 
 # =============================================================================
@@ -1441,24 +1474,20 @@ class HashGenEditorTab(IMessageEditorTab):
             path = getattr(self, '_requestPath', '')
             if not path:
                 return False
-            name, preset = self._extender.preset_manager.find_by_pattern(path)
-            if not preset:
+            app_name, app, pattern, ep = self._extender.preset_manager.find_by_url(path)
+            if not app:
                 return False
-            # Hash config
-            h = preset.get("hash", {})
-            if h.get("algorithm"):
-                self._algoCombo.setSelectedItem(h["algorithm"])
-            if "secret" in h:
-                self._passcodeField.setText(h["secret"])
-            if h.get("custom_data"):
-                self._customDataPanel.setPairs(h["custom_data"])
-            if "keys_order" in h:
-                self._keysField.setText(h["keys_order"])
-                self._keysUserEdited = True  # don't let auto-extract overwrite
-            if "hash_field" in h:
-                self._hashFieldName.setText(h["hash_field"])
+            # App-level fields
+            if app.get("algorithm"):
+                self._algoCombo.setSelectedItem(app["algorithm"])
+            if "secret" in app:
+                self._passcodeField.setText(app["secret"])
+            if app.get("custom_data"):
+                self._customDataPanel.setPairs(app["custom_data"])
+            if "hash_field" in app:
+                self._hashFieldName.setText(app["hash_field"])
             # Crypto config
-            c = preset.get("crypto", {})
+            c = app.get("crypto", {})
             if c.get("mode"):
                 self._inlineCryptoMode.setSelectedItem(c["mode"])
             if c.get("algorithm"):
@@ -1469,7 +1498,11 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._inlineCryptoIv.setText(c["iv"])
             if "field" in c:
                 self._inlineCryptoField.setText(c["field"])
-            print("[CipherKit] Auto-loaded preset: %s (matched %s)" % (name, path))
+            # Endpoint-level: keys_order
+            if ep and "keys_order" in ep:
+                self._keysField.setText(ep["keys_order"])
+                self._keysUserEdited = True
+            print("[CipherKit] Auto-loaded preset: %s / %s" % (app_name, pattern))
             return True
         except Exception as e:
             print("[CipherKit] Preset auto-load error: %s" % str(e))
@@ -1733,46 +1766,59 @@ class HashGenEditorTab(IMessageEditorTab):
             self._hashOutput.setText(str(result))
 
     def _onInlineSavePreset(self, event=None):
-        """Quick-save current inline config as a preset."""
+        """Quick-save current inline config as an app preset + endpoint."""
         path = getattr(self, '_requestPath', '')
-        name = JOptionPane.showInputDialog(
-            self._panel, "Preset name:", "Save Preset",
-            JOptionPane.PLAIN_MESSAGE, None, None, ""
+        existing = self._extender.preset_manager.get_all_names()
+        choices = existing + ["[ New app... ]"]
+        app_name = JOptionPane.showInputDialog(
+            self._panel, "App preset name (select existing or type new):", "Save Preset",
+            JOptionPane.PLAIN_MESSAGE, None,
+            choices if choices else None,
+            existing[0] if existing else ""
         )
-        if not name or not str(name).strip():
+        if not app_name or not str(app_name).strip():
             return
-        name = str(name).strip()
+        app_name = str(app_name).strip()
+        if app_name == "[ New app... ]":
+            app_name = JOptionPane.showInputDialog(
+                self._panel, "New app name:", "Save Preset",
+                JOptionPane.PLAIN_MESSAGE, None, None, ""
+            )
+            if not app_name or not str(app_name).strip():
+                return
+            app_name = str(app_name).strip()
+
         pattern = JOptionPane.showInputDialog(
-            self._panel,
-            "URL pattern for auto-matching:",
+            self._panel, "URL pattern for this endpoint (e.g. /api/user):",
             "URL Pattern", JOptionPane.PLAIN_MESSAGE, None, None, path
         )
         pattern = str(pattern).strip() if pattern else ""
-        preset = {
-            "match_pattern": pattern,
-            "hash": {
-                "algorithm": str(self._algoCombo.getSelectedItem()),
-                "secret": self._passcodeField.getText(),
-                "custom_data": self._customDataPanel.getPairs(),
-                "keys_order": self._keysField.getText().strip(),
-                "hash_field": self._hashFieldName.getText().strip() or "hash",
-            },
+
+        app_data = {
+            "algorithm":   str(self._algoCombo.getSelectedItem()),
+            "secret":      self._passcodeField.getText(),
+            "custom_data": self._customDataPanel.getPairs(),
+            "hash_field":  self._hashFieldName.getText().strip() or "hash",
             "crypto": {
-                "mode": str(self._inlineCryptoMode.getSelectedItem()),
+                "mode":      str(self._inlineCryptoMode.getSelectedItem()),
                 "algorithm": str(self._inlineCryptoAlgo.getSelectedItem()),
-                "key": self._inlineCryptoKey.getText(),
-                "iv": self._inlineCryptoIv.getText(),
-                "field": self._inlineCryptoField.getText().strip() or "data",
+                "key":       self._inlineCryptoKey.getText(),
+                "iv":        self._inlineCryptoIv.getText(),
+                "field":     self._inlineCryptoField.getText().strip() or "data",
             },
         }
-        self._extender.preset_manager.save_preset(name, preset)
-        # Refresh main tab's preset combo if available
+        self._extender.preset_manager.save_app(app_name, app_data)
+        if pattern:
+            self._extender.preset_manager.save_endpoint(
+                app_name, pattern, self._keysField.getText().strip()
+            )
         try:
             self._extender._refreshPresetCombo()
         except:
             pass
-        self._hashOutput.setText("Preset saved: %s" % name)
-        print("[CipherKit] Preset saved from inline: %s" % name)
+        label = "%s%s" % (app_name, (" / " + pattern) if pattern else "")
+        self._hashOutput.setText("Preset saved: %s" % label)
+        print("[CipherKit] Preset saved: %s" % label)
 
     def _onCryptoRun(self, event=None):
         """Run AES-CBC encrypt/decrypt on the named body field and show result."""
@@ -2511,28 +2557,29 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # Preset Actions
     # -------------------------------------------------------------------------
     def _onPresetSelected(self):
-        """Load selected preset into Hash + Crypto main tab fields."""
+        """Load selected app preset into Hash + Crypto main tab fields."""
         try:
             name = str(self._presetCombo.getSelectedItem())
             if name == "(none)":
                 return
-            preset = self.preset_manager.get_preset(name)
-            if not preset:
+            app = self.preset_manager.get_app(name)
+            if not app:
                 return
-            # Hash config
-            h = preset.get("hash", {})
-            if h.get("algorithm"):
-                self._algoCombo.setSelectedItem(h["algorithm"])
-            if "secret" in h:
-                self._passcodeField.setText(h["secret"])
-            if h.get("custom_data"):
-                self._customDataPanel.setPairs(h["custom_data"])
-            if "keys_order" in h:
-                self._keysOrderField.setText(h["keys_order"])
-            if "hash_field" in h:
-                self._mainHashFieldName.setText(h["hash_field"])
+            if app.get("algorithm"):
+                self._algoCombo.setSelectedItem(app["algorithm"])
+            if "secret" in app:
+                self._passcodeField.setText(app["secret"])
+            if app.get("custom_data"):
+                self._customDataPanel.setPairs(app["custom_data"])
+            if "hash_field" in app:
+                self._mainHashFieldName.setText(app["hash_field"])
+            # keys_order: show first endpoint's value if available
+            endpoints = app.get("endpoints", {})
+            if endpoints:
+                first_ep = list(endpoints.values())[0]
+                self._keysOrderField.setText(first_ep.get("keys_order", ""))
             # Crypto config
-            c = preset.get("crypto", {})
+            c = app.get("crypto", {})
             if c.get("mode"):
                 self._cryptoModeCombo.setSelectedItem(c["mode"])
             if c.get("algorithm"):
@@ -2547,44 +2594,34 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             print("[CipherKit] Preset load error: %s" % str(e))
 
     def _onSavePreset(self, event=None):
-        """Save current config as a named preset."""
+        """Save current config as an app-level preset."""
         name = JOptionPane.showInputDialog(
-            self._mainPanel, "Preset name:", "Save Preset",
+            self._mainPanel, "App preset name:", "Save Preset",
             JOptionPane.PLAIN_MESSAGE, None, None, ""
         )
         if not name or not str(name).strip():
             return
         name = str(name).strip()
-        pattern = JOptionPane.showInputDialog(
-            self._mainPanel,
-            "URL pattern for auto-matching (e.g. /api/user):\n(Leave blank for manual-only preset)",
-            "URL Pattern", JOptionPane.PLAIN_MESSAGE, None, None, ""
-        )
-        pattern = str(pattern).strip() if pattern else ""
-        preset = {
-            "match_pattern": pattern,
-            "hash": {
-                "algorithm": str(self._algoCombo.getSelectedItem()),
-                "secret": self._passcodeField.getText(),
-                "custom_data": self._customDataPanel.getPairs(),
-                "keys_order": self._keysOrderField.getText().strip(),
-                "hash_field": self._mainHashFieldName.getText().strip() or "hash",
-            },
+        app_data = {
+            "algorithm":   str(self._algoCombo.getSelectedItem()),
+            "secret":      self._passcodeField.getText(),
+            "custom_data": self._customDataPanel.getPairs(),
+            "hash_field":  self._mainHashFieldName.getText().strip() or "hash",
             "crypto": {
-                "mode": str(self._cryptoModeCombo.getSelectedItem()),
+                "mode":      str(self._cryptoModeCombo.getSelectedItem()),
                 "algorithm": str(self._cryptoAlgoCombo.getSelectedItem()),
-                "key": self._cryptoKeyField.getText(),
-                "iv": self._cryptoIvField.getText(),
-                "field": self._mainCryptoField.getText().strip() or "data",
+                "key":       self._cryptoKeyField.getText(),
+                "iv":        self._cryptoIvField.getText(),
+                "field":     self._mainCryptoField.getText().strip() or "data",
             },
         }
-        self.preset_manager.save_preset(name, preset)
+        self.preset_manager.save_app(name, app_data)
         self._refreshPresetCombo()
         self._presetCombo.setSelectedItem(name)
         print("[CipherKit] Preset saved: %s" % name)
 
     def _onDeletePreset(self, event=None):
-        """Delete the selected preset."""
+        """Delete the selected app preset."""
         name = str(self._presetCombo.getSelectedItem())
         if name == "(none)":
             return
@@ -2593,7 +2630,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             "Delete Preset", JOptionPane.YES_NO_OPTION
         )
         if confirm == JOptionPane.YES_OPTION:
-            self.preset_manager.delete_preset(name)
+            self.preset_manager.delete_app(name)
             self._refreshPresetCombo()
             print("[CipherKit] Preset deleted: %s" % name)
 
