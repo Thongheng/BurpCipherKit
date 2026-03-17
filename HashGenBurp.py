@@ -1450,9 +1450,8 @@ class HashGenEditorTab(IMessageEditorTab):
                 mainCryptoAlgo = ext._cryptoAlgoCombo.getSelectedItem()
                 if mainCryptoAlgo:
                     self._inlineCryptoAlgo.setSelectedItem(mainCryptoAlgo)
-                mainCryptoMode = ext._cryptoModeCombo.getSelectedItem()
-                if mainCryptoMode:
-                    self._inlineCryptoMode.setSelectedItem(mainCryptoMode)
+                # Set key/iv/field BEFORE mode so the mode-change listener fires
+                # with the key already populated (avoids spurious "Key is required")
                 cryptoKey = ext._cryptoKeyField.getText()
                 if cryptoKey:
                     self._inlineCryptoKey.setText(cryptoKey)
@@ -1462,6 +1461,9 @@ class HashGenEditorTab(IMessageEditorTab):
                 mainCryptoField = ext._mainCryptoField.getText().strip()
                 if mainCryptoField:
                     self._inlineCryptoField.setText(mainCryptoField)
+                mainCryptoMode = ext._cryptoModeCombo.getSelectedItem()
+                if mainCryptoMode:
+                    self._inlineCryptoMode.setSelectedItem(mainCryptoMode)
             except Exception as e:
                 print("[CipherKit] Sync crypto error: %s" % str(e))
         except Exception as e:
@@ -1486,10 +1488,9 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._customDataPanel.setPairs(app["custom_data"])
             if "hash_field" in app:
                 self._hashFieldName.setText(app["hash_field"])
-            # Crypto config
+            # Crypto config — set key/iv/field BEFORE mode to avoid spurious
+            # "Key is required" from the mode-change listener firing too early
             c = app.get("crypto", {})
-            if c.get("mode"):
-                self._inlineCryptoMode.setSelectedItem(c["mode"])
             if c.get("algorithm"):
                 self._inlineCryptoAlgo.setSelectedItem(c["algorithm"])
             if "key" in c:
@@ -1498,6 +1499,8 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._inlineCryptoIv.setText(c["iv"])
             if "field" in c:
                 self._inlineCryptoField.setText(c["field"])
+            if c.get("mode"):
+                self._inlineCryptoMode.setSelectedItem(c["mode"])
             # Endpoint-level: keys_order
             if ep and "keys_order" in ep:
                 self._keysField.setText(ep["keys_order"])
@@ -1701,6 +1704,15 @@ class HashGenEditorTab(IMessageEditorTab):
         # Sync remaining config from main tab (only fields not set by preset)
         if not preset_loaded:
             self._syncFromMainTab()
+
+        # If the Crypto tab is already selected, re-run auto-decrypt now that
+        # key/iv have been populated (the mode-change listener may have fired
+        # before the key was set, producing a spurious "Key is required" error)
+        try:
+            if self._configTabs.getSelectedIndex() == 1:
+                self._onAutoDecrypt()
+        except Exception:
+            pass
 
     def getMessage(self):
         if self._currentMessage is None:
