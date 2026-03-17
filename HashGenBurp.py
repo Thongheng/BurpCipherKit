@@ -1182,15 +1182,11 @@ class HashGenEditorTab(IMessageEditorTab):
         cgbc.insets  = Insets(1, 3, 1, 3)
         cgbc.anchor  = GridBagConstraints.WEST
 
-        # Row 0: Mode
-        cgbc.gridy = 0; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
-        cryptoConfigPanel.add(JLabel("Mode:"), cgbc)
-        cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
-        self._inlineCryptoMode = JComboBox(["Encrypt", "Decrypt"])
-        cryptoConfigPanel.add(self._inlineCryptoMode, cgbc)
+        # Mode kept as hidden widget - logic uses Decrypt on open, Encrypt on edit
+        self._inlineCryptoMode = JComboBox(["Decrypt", "Encrypt"])
 
-        # Row 1: Algorithm
-        cgbc.gridy = 1; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        # Row 0: Algorithm
+        cgbc.gridy = 0; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
         cryptoConfigPanel.add(JLabel("Algorithm:"), cgbc)
         cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
         crypto_names = extender.crypto_snippet_manager.get_all_names()
@@ -1199,16 +1195,16 @@ class HashGenEditorTab(IMessageEditorTab):
         self._inlineCryptoAlgo = JComboBox(crypto_names)
         cryptoConfigPanel.add(self._inlineCryptoAlgo, cgbc)
 
-        # Row 2: Key
-        cgbc.gridy = 2; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        # Row 1: Key
+        cgbc.gridy = 1; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
         cryptoConfigPanel.add(JLabel("Key:"), cgbc)
         cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
         self._inlineCryptoKey = JTextField()
         self._inlineCryptoKey.setToolTipText("")
         cryptoConfigPanel.add(self._inlineCryptoKey, cgbc)
 
-        # Row 3: IV
-        cgbc.gridy = 3; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        # Row 2: IV
+        cgbc.gridy = 2; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
         self._inlineCryptoIvLbl = JLabel("IV:")
         cryptoConfigPanel.add(self._inlineCryptoIvLbl, cgbc)
         cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
@@ -1216,8 +1212,8 @@ class HashGenEditorTab(IMessageEditorTab):
         self._inlineCryptoIv.setToolTipText("")
         cryptoConfigPanel.add(self._inlineCryptoIv, cgbc)
 
-        # Row 4: Target Field + Buttons
-        cgbc.gridy = 4; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        # Row 3: Target Field + Buttons
+        cgbc.gridy = 3; cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
         cryptoConfigPanel.add(JLabel("Field:"), cgbc)
         cgbc.gridx = 1; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL
         cryptoRow = JPanel(BorderLayout(4, 0))
@@ -1240,7 +1236,7 @@ class HashGenEditorTab(IMessageEditorTab):
         cryptoConfigPanel.add(cryptoRow, cgbc)
 
         # ----------------------------------------------------------------
-        # Key Finder sub-tab panel (compact controls only — no Parsed/Results)
+        # Key Finder sub-tab panel (compact controls only - no Parsed/Results)
         # Parsed Fields + Results live in the CENTER card to avoid inflating
         # the configTabs height for Hash/Crypto tabs.
         # ----------------------------------------------------------------
@@ -1314,6 +1310,7 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_preset_names = ["(none)"] + extender.preset_manager.get_all_names()
         self._inlinePresetCombo = JComboBox(_pt_preset_names)
         self._inlinePresetCombo.setToolTipText("Select app preset to load (algorithm, secret, crypto settings)")
+        self._inlinePresetCombo.addActionListener(lambda e: self._refreshInlinePresetInfo())
         _pt_appRow.add(self._inlinePresetCombo, BorderLayout.CENTER)
         _pt_appBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
         _pt_loadBtn = JButton("Load", actionPerformed=self._onInlineLoadPreset)
@@ -1345,7 +1342,7 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_saveEpBtn = JButton("Save Endpoint", actionPerformed=self._onInlineSavePreset)
         _pt_saveEpBtn.setToolTipText(
             "Save this URL + keys order under the selected app.\n"
-            "Do this once per endpoint — it auto-loads next time."
+            "Do this once per endpoint - it auto-loads next time."
         )
         _pt_epRow.add(_pt_saveEpBtn, BorderLayout.EAST)
         presetTabPanel.add(_pt_epRow, pgbc)
@@ -1373,13 +1370,13 @@ class HashGenEditorTab(IMessageEditorTab):
         self._panel.add(configTabs, BorderLayout.NORTH)
 
         # ================================================================
-        # CENTER: CardLayout — switches between Hash/Crypto view and KF view
+        # CENTER: CardLayout - switches between Hash/Crypto view and KF view
         # ================================================================
         from java.awt import CardLayout as _CardLayout
         self._cardLayout  = _CardLayout()
         centerPanel = JPanel(self._cardLayout)
 
-        # ---- Card 1: Hash/Crypto — Request Body + Output ----
+        # ---- Card 1: Hash/Crypto - Request Body + Output ----
         hashCryptoCard = JPanel(BorderLayout(0, 4))
 
         bodyWrap = JPanel(BorderLayout(0, 2))
@@ -1443,7 +1440,7 @@ class HashGenEditorTab(IMessageEditorTab):
         hcSplit.setResizeWeight(0.8)
         hashCryptoCard.add(hcSplit, BorderLayout.CENTER)
 
-        # ---- Card 2: Key Finder — Parsed Fields + Results ----
+        # ---- Card 2: Key Finder - Parsed Fields + Results ----
         kfCard = JPanel(BorderLayout(0, 4))
 
         parsedWrap = JPanel(BorderLayout(0, 2))
@@ -1466,8 +1463,19 @@ class HashGenEditorTab(IMessageEditorTab):
         kfSplit.setResizeWeight(0.4)
         kfCard.add(kfSplit, BorderLayout.CENTER)
 
+        # ---- Card 3: Preset info - shows saved config for current preset ----
+        presetCard = JPanel(BorderLayout(0, 6))
+        presetCard.setBorder(EmptyBorder(6, 6, 6, 6))
+        self._presetInfoArea = JTextArea()
+        self._presetInfoArea.setEditable(False)
+        self._presetInfoArea.setFont(Font("Monospaced", Font.PLAIN, _MONO_FONT_SIZE))
+        self._presetInfoArea.setLineWrap(False)
+        self._presetInfoArea.setText("(no preset matched for this request)")
+        presetCard.add(JScrollPane(self._presetInfoArea), BorderLayout.CENTER)
+
         centerPanel.add(hashCryptoCard, "hashcrypto")
         centerPanel.add(kfCard,         "keyfinder")
+        centerPanel.add(presetCard,     "preset")
         self._panel.add(centerPanel, BorderLayout.CENTER)
 
         # Switch cards + auto-decrypt/parse when tabs change
@@ -1487,7 +1495,7 @@ class HashGenEditorTab(IMessageEditorTab):
                         _outer._cryptoAutoMode = False
                         _outer._cryptoDebounceTimer.stop()
                         _outer._hashOutput.setEditable(False)
-                        _outer._cardLayout.show(centerPanel, "hashcrypto")
+                        _outer._cardLayout.show(centerPanel, "preset")
                         _outer._onPresetTabFocus()
                     else:
                         _outer._cardLayout.show(centerPanel, "hashcrypto")
@@ -1500,16 +1508,6 @@ class HashGenEditorTab(IMessageEditorTab):
                 except Exception:
                     pass
         configTabs.addChangeListener(_TabListener())
-
-        # Also auto-decrypt when mode combo changes while on Crypto tab
-        class _ModeChangeListener(ActionListener):
-            def actionPerformed(self, e):
-                try:
-                    if _outer._configTabs.getSelectedIndex() == 1:
-                        _outer._onAutoDecrypt()
-                except Exception:
-                    pass
-        self._inlineCryptoMode.addActionListener(_ModeChangeListener())
 
         # Sync config fields from the main tab if available
         self._syncFromMainTab()
@@ -1577,7 +1575,7 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._customDataPanel.setPairs(app["custom_data"])
             if "hash_field" in app:
                 self._hashFieldName.setText(app["hash_field"])
-            # Crypto config — set key/iv/field BEFORE mode to avoid spurious
+            # Crypto config - set key/iv/field BEFORE mode to avoid spurious
             # "Key is required" from the mode-change listener firing too early
             c = app.get("crypto", {})
             if c.get("algorithm"):
@@ -1920,7 +1918,7 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception:
             keys_order = self._keysField.getText().strip()
 
-        # Save app-level config (algorithm, secret, crypto — shared across endpoints)
+        # Save app-level config (algorithm, secret, crypto - shared across endpoints)
         app_data = {
             "algorithm":   str(self._algoCombo.getSelectedItem()),
             "secret":      self._passcodeField.getText(),
@@ -2011,14 +2009,60 @@ class HashGenEditorTab(IMessageEditorTab):
             print("[CipherKit] Refresh inline combo error: %s" % str(e))
 
     def _onPresetTabFocus(self):
-        """Populate the Preset tab fields when the user switches to it."""
+        """Populate the Preset tab fields and info area when switching to it."""
         try:
             path = getattr(self, '_requestPath', '')
             self._inlineUrlLabel.setText(path or "(no request loaded)")
-            # Sync keys field from Hash tab into the Preset tab keys field
             self._inlineEpKeysField.setText(self._keysField.getText())
+            self._refreshInlinePresetInfo()
         except Exception as e:
             print("[CipherKit] Preset tab focus error: %s" % str(e))
+
+    def _refreshInlinePresetInfo(self):
+        """Refresh the preset info text area with the selected app's saved config."""
+        try:
+            name = str(self._inlinePresetCombo.getSelectedItem())
+            if name == "(none)":
+                self._presetInfoArea.setText("(no preset selected - pick one from the dropdown above)")
+                return
+            app = self._extender.preset_manager.get_app(name)
+            if not app:
+                self._presetInfoArea.setText("(preset '%s' not found)" % name)
+                return
+            path = getattr(self, '_requestPath', '')
+            lines = []
+            lines.append("App Preset : %s" % name)
+            lines.append("Current URL: %s" % (path or "(none)"))
+            lines.append("")
+            lines.append("Shared Config")
+            lines.append("-" * 40)
+            lines.append("  Algorithm : %s" % app.get("algorithm", ""))
+            lines.append("  Secret    : %s" % app.get("secret", ""))
+            lines.append("  Hash Field: %s" % app.get("hash_field", ""))
+            c = app.get("crypto", {})
+            if c:
+                lines.append("")
+                lines.append("  Crypto")
+                lines.append("    Algorithm: %s" % c.get("algorithm", ""))
+                lines.append("    Key      : %s" % c.get("key", ""))
+                lines.append("    IV       : %s" % c.get("iv", ""))
+                lines.append("    Field    : %s" % c.get("field", ""))
+            endpoints = app.get("endpoints", {})
+            if endpoints:
+                lines.append("")
+                lines.append("Endpoints")
+                lines.append("-" * 40)
+                for pat, ep in endpoints.items():
+                    matched = " < matched" if pat and pat in path else ""
+                    lines.append("  %-28s  %s%s" % (pat, ep.get("keys_order", ""), matched))
+            else:
+                lines.append("")
+                lines.append("No endpoints saved yet.")
+                lines.append("Set keys order in the Hash tab, then click Save Endpoint.")
+            self._presetInfoArea.setText("\n".join(lines))
+            self._presetInfoArea.setCaretPosition(0)
+        except Exception as e:
+            print("[CipherKit] Preset info refresh error: %s" % str(e))
 
     def _onInlineDeletePreset(self, event=None):
         """Delete the selected app preset."""
@@ -2364,15 +2408,63 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         cryptoEditorPanel  = self._buildCryptoEditorTab()
         keyFinderPanel     = self._buildKeyFinderTab()
 
+        presetPanel = self._buildPresetTab()
+
         self._tabbedPane.addTab("Hash", generatorPanel)
         self._tabbedPane.addTab("Crypto", cryptoPanel)
         self._tabbedPane.addTab("Key Finder", keyFinderPanel)
         self._tabbedPane.addTab("Hash Editor", editorPanel)
         self._tabbedPane.addTab("Crypto Editor", cryptoEditorPanel)
+        self._tabbedPane.addTab("Preset", presetPanel)
 
     # -------------------------------------------------------------------------
     # Generator Tab
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Preset Tab (main CipherKit)
+    # -------------------------------------------------------------------------
+    def _buildPresetTab(self):
+        panel = JPanel(BorderLayout(0, 8))
+        panel.setBorder(EmptyBorder(10, 10, 10, 10))
+
+        # Top: App selector row
+        topRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        topRow.add(JLabel("App Preset:"))
+        preset_names = ["(none)"] + self.preset_manager.get_all_names()
+        self._presetCombo = JComboBox(preset_names)
+        self._presetCombo.setPreferredSize(Dimension(180, 24))
+        self._presetCombo.setToolTipText("Select an app preset")
+        self._presetCombo.addActionListener(lambda e: self._refreshPresetSummary())
+        topRow.add(self._presetCombo)
+
+        _pt_loadBtn = JButton("Load", actionPerformed=self._onPresetSelected)
+        _pt_loadBtn.setToolTipText("Load selected preset into Hash / Crypto tabs")
+        topRow.add(_pt_loadBtn)
+
+        _pt_saveBtn = JButton("Save New", actionPerformed=self._onSavePreset)
+        _pt_saveBtn.setToolTipText("Save current Hash/Crypto config as a new app preset")
+        topRow.add(_pt_saveBtn)
+
+        _pt_updateBtn = JButton("Update", actionPerformed=self._onUpdatePreset)
+        _pt_updateBtn.setToolTipText("Update the selected preset with current Hash/Crypto config")
+        topRow.add(_pt_updateBtn)
+
+        _pt_delBtn = JButton("Delete", actionPerformed=self._onDeletePreset)
+        _pt_delBtn.setToolTipText("Delete selected app preset and all its endpoints")
+        topRow.add(_pt_delBtn)
+
+        panel.add(topRow, BorderLayout.NORTH)
+
+        # Center: read-only summary of saved config
+        self._presetSummaryArea = JTextArea()
+        self._presetSummaryArea.setEditable(False)
+        self._presetSummaryArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._presetSummaryArea.setLineWrap(False)
+        self._presetSummaryArea.setText("(no preset selected)")
+        panel.add(JScrollPane(self._presetSummaryArea), BorderLayout.CENTER)
+
+        return panel
+
     def _buildGeneratorTab(self):
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
@@ -2390,34 +2482,13 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.weightx = 1.0
         lgbc.fill = GridBagConstraints.HORIZONTAL
 
-        # Preset selector
-        lgbc.gridy = 0
-        leftPanel.add(JLabel("Preset:"), lgbc)
-
-        lgbc.gridy = 1
-        presetRow = JPanel(BorderLayout(4, 0))
-        preset_names = ["(none)"] + self.preset_manager.get_all_names()
-        self._presetCombo = JComboBox(preset_names)
-        self._presetCombo.addActionListener(lambda e: self._onPresetSelected())
-        presetRow.add(self._presetCombo, BorderLayout.CENTER)
-        presetBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
-        savePresetBtn = JButton("Save", actionPerformed=self._onSavePreset)
-        savePresetBtn.setToolTipText("Save current config as a preset")
-        deletePresetBtn = JButton("Delete", actionPerformed=self._onDeletePreset)
-        deletePresetBtn.setToolTipText("Delete selected preset")
-        presetBtnPanel.add(savePresetBtn)
-        presetBtnPanel.add(deletePresetBtn)
-        presetRow.add(presetBtnPanel, BorderLayout.EAST)
-        leftPanel.add(presetRow, lgbc)
-
         # Algorithm
-        lgbc.gridy = 2
-        lgbc.insets = Insets(10, 4, 3, 4)
+        lgbc.gridy = 0
+        lgbc.insets = Insets(3, 4, 3, 4)
         lbl = JLabel("Algorithm:")
         leftPanel.add(lbl, lgbc)
 
-        lgbc.gridy = 3
-        lgbc.insets = Insets(3, 4, 3, 4)
+        lgbc.gridy = 1
         names = self.snippet_manager.get_all_names()
         if not names:
             names = ["Default"]
@@ -2426,12 +2497,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         leftPanel.add(self._algoCombo, lgbc)
 
         # Secret
-        lgbc.gridy = 4
+        lgbc.gridy = 2
         lgbc.insets = Insets(10, 4, 3, 4)
         lbl = JLabel("Secret:")
         leftPanel.add(lbl, lgbc)
 
-        lgbc.gridy = 5
+        lgbc.gridy = 3
         lgbc.insets = Insets(3, 4, 3, 4)
         self._passcodeField = JTextField()
         self._passcodeLabel = lbl
@@ -2439,83 +2510,82 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         SwingUtilities.invokeLater(lambda: self._updatePasscodeFieldState())
 
         # Custom Data
-        lgbc.gridy = 6
+        lgbc.gridy = 4
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Custom Data:")
         leftPanel.add(lbl, lgbc)
 
-        lgbc.gridy = 7
+        lgbc.gridy = 5
         lgbc.insets = Insets(3, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.NORTHWEST
         self._customDataPanel = CustomDataPanel()
         leftPanel.add(self._customDataPanel, lgbc)
 
         # Keys Order
-        lgbc.gridy = 8
+        lgbc.gridy = 6
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Keys Order (comma separated):")
         leftPanel.add(lbl, lgbc)
 
-        lgbc.gridy = 9
+        lgbc.gridy = 7
         lgbc.insets = Insets(3, 4, 3, 4)
         self._keysOrderField = JTextField()
         leftPanel.add(self._keysOrderField, lgbc)
 
         # Hash Field
-        lgbc.gridy = 10
+        lgbc.gridy = 8
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         leftPanel.add(JLabel("Hash Field:"), lgbc)
 
-        lgbc.gridy = 11
+        lgbc.gridy = 9
         lgbc.insets = Insets(3, 4, 3, 4)
         self._mainHashFieldName = JTextField("hash")
         self._mainHashFieldName.setToolTipText("JSON key name where the hash will be injected")
         leftPanel.add(self._mainHashFieldName, lgbc)
 
         # Body Format
-        lgbc.gridy = 12
+        lgbc.gridy = 10
         lgbc.insets = Insets(10, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Body Format:")
         leftPanel.add(lbl, lgbc)
 
-        lgbc.gridy = 13
+        lgbc.gridy = 11
         lgbc.insets = Insets(3, 4, 3, 4)
         self._bodyFormatCombo = JComboBox(["JSON", "URL-encoded", "multipart/form-data"])
         leftPanel.add(self._bodyFormatCombo, lgbc)
 
         # Boundary (only relevant for multipart)
-        lgbc.gridy = 14
+        lgbc.gridy = 12
         lgbc.insets = Insets(6, 4, 3, 4)
         lgbc.anchor = GridBagConstraints.WEST
         lbl = JLabel("Boundary (multipart only):")
         leftPanel.add(lbl, lgbc)
 
-        lgbc.gridy = 15
+        lgbc.gridy = 13
         lgbc.insets = Insets(3, 4, 3, 4)
         self._boundaryField = JTextField()
         self._boundaryField.setToolTipText("Paste the boundary value from Content-Type header (without leading --)")
         leftPanel.add(self._boundaryField, lgbc)
 
         # Generate button
-        lgbc.gridy = 16
+        lgbc.gridy = 14
         lgbc.insets = Insets(20, 4, 4, 4)
         lgbc.anchor = GridBagConstraints.NORTHWEST
         self._generateBtn = JButton("Generate", actionPerformed=self._onGenerate)
         leftPanel.add(self._generateBtn, lgbc)
 
-        # Spacer to push everything to the top
+        # Spacer
         lgbc.gridy = 15
-        lgbc.gridy = 17
         lgbc.weighty = 1.0
         lgbc.insets = Insets(0, 0, 0, 0)
-        leftPanel.add(JPanel(), lgbc)  # empty filler
+        leftPanel.add(JPanel(), lgbc)
 
 
-        # ── Right side: text areas with label above each box ──
+        # -- Right side: text areas with label above each box --
         rightPanel = JPanel(GridBagLayout())
         rightPanel.setBorder(EmptyBorder(0, 0, 0, 0))
         gbc = GridBagConstraints()
@@ -2846,6 +2916,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self.preset_manager.save_app(name, app_data)
         self._refreshPresetCombo()
         self._presetCombo.setSelectedItem(name)
+        self._refreshPresetSummary()
         print("[CipherKit] Preset saved: %s" % name)
 
     def _onDeletePreset(self, event=None):
@@ -2860,14 +2931,85 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         if confirm == JOptionPane.YES_OPTION:
             self.preset_manager.delete_app(name)
             self._refreshPresetCombo()
+            self._refreshPresetSummary()
             print("[CipherKit] Preset deleted: %s" % name)
+
+    def _onUpdatePreset(self, event=None):
+        """Update the currently selected app preset with current Hash/Crypto config (no name prompt)."""
+        name = str(self._presetCombo.getSelectedItem())
+        if name == "(none)":
+            JOptionPane.showMessageDialog(self._mainPanel,
+                "Select an app preset first.", "Update Preset",
+                JOptionPane.INFORMATION_MESSAGE)
+            return
+        app_data = {
+            "algorithm":   str(self._algoCombo.getSelectedItem()),
+            "secret":      self._passcodeField.getText(),
+            "custom_data": self._customDataPanel.getPairs(),
+            "hash_field":  self._mainHashFieldName.getText().strip() or "hash",
+            "crypto": {
+                "mode":      str(self._cryptoModeCombo.getSelectedItem()),
+                "algorithm": str(self._cryptoAlgoCombo.getSelectedItem()),
+                "key":       self._cryptoKeyField.getText(),
+                "iv":        self._cryptoIvField.getText(),
+                "field":     self._mainCryptoField.getText().strip() or "data",
+            },
+        }
+        self.preset_manager.save_app(name, app_data)
+        self._refreshPresetSummary()
+        print("[CipherKit] Preset updated: %s" % name)
 
     def _refreshPresetCombo(self):
         """Refresh the preset combo box with current preset names."""
+        current = str(self._presetCombo.getSelectedItem())
         self._presetCombo.removeAllItems()
         self._presetCombo.addItem("(none)")
         for n in self.preset_manager.get_all_names():
             self._presetCombo.addItem(n)
+        if current and current != "(none)":
+            self._presetCombo.setSelectedItem(current)
+
+    def _refreshPresetSummary(self):
+        """Refresh the Preset tab summary text area with the selected app's config."""
+        try:
+            name = str(self._presetCombo.getSelectedItem())
+            if name == "(none)":
+                self._presetSummaryArea.setText("(no preset selected)")
+                return
+            app = self.preset_manager.get_app(name)
+            if not app:
+                self._presetSummaryArea.setText("(preset not found)")
+                return
+            lines = []
+            lines.append("App Preset : %s" % name)
+            lines.append("")
+            lines.append("Shared Config")
+            lines.append("-" * 44)
+            lines.append("  Algorithm : %s" % app.get("algorithm", ""))
+            lines.append("  Secret    : %s" % app.get("secret", ""))
+            lines.append("  Hash Field: %s" % app.get("hash_field", ""))
+            c = app.get("crypto", {})
+            if c:
+                lines.append("")
+                lines.append("  Crypto")
+                lines.append("    Algorithm: %s" % c.get("algorithm", ""))
+                lines.append("    Key      : %s" % c.get("key", ""))
+                lines.append("    IV       : %s" % c.get("iv", ""))
+                lines.append("    Field    : %s" % c.get("field", ""))
+            endpoints = app.get("endpoints", {})
+            if endpoints:
+                lines.append("")
+                lines.append("Endpoints")
+                lines.append("-" * 44)
+                for pat, ep in endpoints.items():
+                    lines.append("  %-30s  %s" % (pat, ep.get("keys_order", "")))
+            else:
+                lines.append("")
+                lines.append("No endpoints saved yet.")
+            self._presetSummaryArea.setText("\n".join(lines))
+            self._presetSummaryArea.setCaretPosition(0)
+        except Exception as e:
+            print("[CipherKit] Preset summary error: %s" % str(e))
 
     # -------------------------------------------------------------------------
     # Crypto Editor Tab (add/edit/delete crypto snippet algorithms)
@@ -2960,8 +3102,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         find which permutation of the field values produces that string.
 
         Layout:
-          LEFT  – Body Format, Request Body (large), Additional Values, Parse Body button
-          RIGHT – Parsed Fields, Known String, Find Key Order, Results
+          LEFT  - Body Format, Request Body (large), Additional Values, Parse Body button
+          RIGHT - Parsed Fields, Known String, Find Key Order, Results
         """
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
