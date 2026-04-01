@@ -1,34 +1,34 @@
-# CipherKit - Universal Crypto Toolkit for Burp Suite
+# CipherKit — Universal Crypto Toolkit for Burp Suite
 
-**CipherKit** (formerly HashGen) is a flexible, modular cryptographic toolkit designed to generate hashes, signatures, and perform encryption/decryption using user-defined Python algorithms directly within **Burp Suite** (Jython).
-
-## Features
-
-*   **Hashing & Signatures**: Generate hashes (SHA256, HMAC, etc.) to sign your payloads dynamically.
-*   **Encryption & Decryption**: Built-in AES-CBC-128 and AES-CBC-256, plus custom user-defined crypto routines via Java's `javax.crypto`.
-*   **Key Finder**: Automatically discover the key order used to build a hash input string by brute-forcing field permutations against a known concatenated value.
-*   **Preset System**: Save per-API configurations (algorithm, secret, keys order, crypto settings) as named presets. Presets auto-load when a matching URL pattern is detected in the request editor.
-*   **Dynamic Algorithm Support**: Write implementation logic in Python and execute it on the fly. No need to restart the application. Supports both Hash generation and Crypto encryption/decryption routines.
-*   **Snippet Managers**: Save, Load, and Edit your custom algorithms in the built-in editors (`snippets.json` for hashes, `crypto_snippets.json` for encryption/decryption).
-*   **Inline Request Editor**: Generate hashes or encrypt/decrypt payloads directly from Burp's request viewers (Repeater, Proxy, etc.).
+**CipherKit** is a flexible, modular cryptographic toolkit that generates hashes, signatures, and performs encryption/decryption using user-defined Python algorithms directly inside **Burp Suite** (Jython).
 
 ---
 
-## Burp Suite Extension
+## Features
+
+- **Hashing & Signatures** — Generate HMAC-SHA256, SHA256, and custom signature algorithms to sign payloads dynamically.
+- **Encryption & Decryption** — Built-in AES-CBC-128 and AES-CBC-256, plus custom algorithms via Java's `javax.crypto`.
+- **Key Finder** — Discover the field concatenation order used to build a hash input by brute-forcing permutations against a known value. Runs in a background thread — Burp stays responsive.
+- **AppSetting System** — Save per-API configurations (algorithm, secret, sign order, crypto settings) as named app settings. Auto-loads when a matching URL pattern is detected.
+- **Intruder Auto-Rehash** — Integrates with Burp's Session Handling Rules to automatically recalculate the hash/signature field on every Intruder or Repeater request. No manual clicking required.
+- **Custom Snippet Editors** — Write and save hash and crypto algorithms in Python. Syntax is validated before saving.
+- **Inline Request Editor** — Generate hashes or encrypt/decrypt payloads directly inside Burp's Repeater, Proxy, and other request viewers.
+
+---
+
+## Installation
 
 ### Prerequisites
 
-*   **Burp Suite** (Professional or Community Edition)
-*   **Jython standalone JAR** — download from [jython.org](https://www.jython.org/download)
+- Burp Suite (Professional or Community Edition)
+- Jython standalone JAR — download from [jython.org](https://www.jython.org/download)
 
-### Installation
+### Steps
 
-1.  In Burp Suite, go to **Extender > Options > Python Environment**
-2.  Select the Jython standalone JAR file
-3.  Go to **Extender > Extensions > Add**
-4.  Extension type: **Python**
-5.  Browse to `HashGenBurp.py`
-6.  Confirm `[+] CipherKit extension loaded successfully` in the Output tab.
+1. In Burp Suite go to **Extender › Options › Python Environment** and select your Jython JAR.
+2. Go to **Extender › Extensions › Add**.
+3. Set Extension type to **Python** and browse to `HashGenBurp.py`.
+4. Confirm `[+] CipherKit extension loaded successfully` in the Output tab.
 
 ### Files
 
@@ -37,79 +37,183 @@
 | `HashGenBurp.py` | Main extension source |
 | `snippets.json` | Saved hash/signature algorithms (auto-created) |
 | `crypto_snippets.json` | Saved encryption/decryption algorithms (auto-created) |
-| `presets.json` | Saved per-API presets (auto-created) |
+| `app_settings.json` | Saved per-API app settings (auto-created) |
 
 ---
 
-## Extension Views
+## Main CipherKit Tab
 
-The extension provides **two main views**:
+A dedicated tab in Burp's main tab bar with the following sub-tabs:
 
-### 1. Main CipherKit Tab
+### Hash Tab
 
-A dedicated tab in Burp's main tab bar with four sub-tabs:
+| Field | Description |
+|-------|-------------|
+| **Algorithm** | Select a saved hash snippet |
+| **Secret** | The signing key or passphrase |
+| **Custom Data** | Extra key:value pairs injected into the payload before signing (e.g. an API key not in the request body) |
+| **Sign Order** | Comma-separated list of field names defining the concatenation order (e.g. `user, id, token`) |
+| **Output Field** | The JSON key name where the generated hash will be injected (default: `hash`) |
+| **Body Format** | JSON, URL-encoded, or multipart/form-data |
+| **Payload** | Paste the full request body here |
 
-*   **Hash** — Select a hash algorithm, enter a Secret, add Custom Data, set Keys Order, configure Hash Field, paste a JSON payload, and generate a hash. Includes a **Preset** selector at the top to save/load/delete named configurations.
-*   **Crypto** — Select a crypto algorithm (AES-CBC-128, AES-CBC-256, or custom), enter a Key and IV, choose Encrypt/Decrypt mode, configure the target Field, paste a payload, and process it.
-*   **Hash Editor** — Write, save, load, and delete custom hash algorithms.
-*   **Crypto Editor** — Write, save, load, and delete custom encryption/decryption algorithms.
+Buttons:
+- **Generate** — Compute and display the hash in the Result Hash area.
+- **Debug Output** — Shows any debug information returned by your snippet.
 
-### 2. Inline Request Editor Tab
+### Crypto Tab
 
-A **"CipherKit" tab** that appears alongside **Pretty / Raw / Hex** in every request viewer (Repeater, Proxy, etc.). Optimized for inline workflow with three sub-tabs:
+| Field | Description |
+|-------|-------------|
+| **Mode** | Encrypt or Decrypt |
+| **Algorithm** | Select a saved crypto snippet (AES-CBC-128, AES-CBC-256, or custom) |
+| **Key** | Encryption/decryption key (UTF-8 string) |
+| **IV** | Initialization vector. Leave blank to reuse the Key bytes as IV (AES-CBC-128 default) |
+| **Field** | JSON key to read input from / write output to |
 
-*   **Hash** — Algorithm, Secret, Custom Data, Keys Order, Hash Field, Generate / Gen & Inject / Save Preset buttons.
-*   **Crypto** — Mode, Algorithm, Key, IV, Field, Run Crypto / Run & Inject buttons. Auto-encrypts on value change with debounce.
-*   **Key Finder** — Body Format, Additional Values, Known String, Find Key Order button, with Parsed Fields and Results panels.
+Button: **Run Crypto**
 
-**Auto-sync**: Config set in the main tab automatically syncs to the inline tab when a request is loaded.
+### Key Finder Tab
 
-**Auto-preset**: When a request is loaded, the URL path is matched against saved presets. If a match is found, all fields are auto-populated.
+See [Key Finder](#key-finder) section below.
+
+### Hash Editor Tab
+
+Write, save, load, and delete custom hash/signature algorithms. The code is **syntax-checked** before saving — any error is shown with the line number.
+
+### Crypto Editor Tab
+
+Write, save, load, and delete custom encryption/decryption algorithms. Two labelled code areas: **Encrypt Function** and **Decrypt Function**. Both are syntax-checked before saving.
+
+### AppSetting Tab
+
+View, load, save, update, and delete named app settings. Each setting displays a structured summary showing its algorithm, secret, crypto config, and all saved endpoint patterns.
 
 ---
 
-## Preset System
+## Inline Request Editor Tab
 
-Presets save complete configurations for different APIs/endpoints so you don't have to re-enter settings when switching between applications.
+A **CipherKit** tab appears alongside Pretty / Raw / Hex in every request viewer (Repeater, Proxy, etc.).
 
-### Saving a Preset
+### Hash Sub-tab
+
+Same fields as the main Hash tab. Extra buttons:
+- **Generate** — Compute the hash and show in the output area.
+- **Gen & Inject** — Compute the hash and inject it directly into the request body under the **Output Field** key.
+
+### Crypto Sub-tab
+
+- **Auto-decrypt on tab switch** — When you click the Crypto tab, the configured body field is automatically decrypted and shown in the output area. No manual button press needed.
+- **Auto-encrypt on edit** — After decrypting, any edits to the plaintext output are automatically re-encrypted and written back into the request body after an 800 ms debounce delay.
+- The **Auto-encrypt on edit** checkbox lets you toggle this behaviour per-tab.
+- The global **Auto-encrypt on edit** toggle in the bottom bar disables it session-wide.
+
+### Key Finder Sub-tab
+
+Compact version of the Key Finder. Body is auto-parsed when you open the tab.
+
+### AppSetting Sub-tab
+
+- Shows the current request URL.
+- Lets you load an app setting or save the current config + URL as a new endpoint.
+- **Status** field shows the last auto-load result (e.g. `Auto-loaded: MyApp / /api/login`).
+
+### Auto-sync
+
+Config entered in the main tab is automatically copied to the inline tab when a request is loaded.
+
+### Auto-app-setting
+
+When a request is loaded in the editor, CipherKit extracts the URL path and checks it against all saved app setting endpoint patterns (supports glob wildcards, e.g. `/api/user/*`). If a match is found, all fields are auto-populated.
+
+---
+
+## Intruder Auto-Rehash
+
+CipherKit registers itself as a **Session Handling Action** so that Burp's Session Handling Rules can automatically rehash requests during Intruder scans or Repeater sends — without any manual intervention.
+
+### Setup
+
+1. In Burp go to **Project Options › Sessions › Session Handling Rules**.
+2. Click **Add** to create a new rule.
+3. Under **Rule Actions**, click **Add › Invoke a Burp extension**.
+4. Select **CipherKit - Auto-Rehash** from the action list.
+5. Set the **Scope** to the relevant tool(s): Intruder, Repeater, or Scanner.
+6. Configure the URL scope to match your target.
+
+### How it works
+
+When a request fires through the rule, CipherKit:
+
+1. Extracts the request URL path.
+2. Looks up a matching app setting (exact substring or glob match against saved endpoint patterns).
+3. Parses the request body.
+4. Re-runs the app setting's hash snippet with the current body values, secret, custom data, and sign order.
+5. Injects the new hash value into the configured **Output Field** in the body.
+6. Sends the updated request.
+
+If no app setting matches the URL, the request is passed through unchanged.
+
+### Requirements
+
+- An app setting must be saved for the target URL before using Auto-Rehash (see [AppSetting System](#appsetting-system)).
+- The app setting must have at least one endpoint pattern configured.
+
+### Console output
+
+Every rehash logs to Burp's extension Output tab:
+
+```
+[CipherKit] Auto-Rehash: app_setting='MyApp' pattern='/api/login' hash_field='sign' value='a3f9c2...'
+```
+
+---
+
+## AppSetting System
+
+AppSettings store complete configurations for a specific API so you don't re-enter settings when switching between targets.
+
+### Saving an AppSetting
 
 **From the main tab:**
-1.  Configure all your hash/crypto settings
-2.  Click **Save** next to the Preset dropdown
-3.  Enter a name (e.g. "App A - /api/user")
-4.  Enter a URL pattern for auto-matching (e.g. `/api/user`)
+1. Configure all Hash and Crypto settings.
+2. Go to the **AppSetting** sub-tab and click **Save New**.
+3. Enter a name (e.g. `MyApp`).
 
-**From the inline tab:**
-1.  Configure your settings in the request editor
-2.  Click **Save Preset** button
-3.  Enter a name and URL pattern (pre-filled with current request path)
+**From the inline editor tab:**
+1. Configure settings in the request editor.
+2. Click the **AppSetting** sub-tab.
+3. Enter a **Sign Order** for the current endpoint if needed.
+4. Click **Save Endpoint** — the current URL path is pre-filled as the pattern.
 
-### Auto-Loading
+### Glob Patterns
 
-When you open a request in the editor, CipherKit extracts the URL path and checks it against all preset patterns. If a match is found, all fields (algorithm, secret, keys order, crypto key/IV, etc.) are automatically populated.
+Endpoint URL patterns support `fnmatch`-style wildcards:
 
-### Preset Data
+| Pattern | Matches |
+|---------|---------|
+| `/api/user` | Exactly `/api/user` |
+| `/api/user/*` | `/api/user/123`, `/api/user/profile`, etc. |
+| `/api/*/login` | `/api/v1/login`, `/api/v2/login`, etc. |
 
-Presets are stored in `presets.json` with this structure:
+### AppSetting Data Format
 
 ```json
 {
-  "App A - /api/user": {
-    "match_pattern": "/api/user",
-    "hash": {
-      "algorithm": "HMAC-SHA256",
-      "secret": "mysecret",
-      "custom_data": {"API": "abc123"},
-      "keys_order": "user, id, token",
-      "hash_field": "hash"
-    },
+  "MyApp": {
+    "algorithm": "ABA HMAC SHA256",
+    "secret": "mysecretkey",
+    "custom_data": {"API": "abc123"},
+    "hash_field": "sign",
     "crypto": {
-      "mode": "Encrypt",
       "algorithm": "AES-CBC-128",
-      "key": "mykey",
+      "key": "myencryptionkey!",
       "iv": "",
       "field": "data"
+    },
+    "endpoints": {
+      "/api/login": { "keys_order": "user, password, timestamp" },
+      "/api/user/*": { "keys_order": "id, action, timestamp" }
     }
   }
 }
@@ -119,37 +223,41 @@ Presets are stored in `presets.json` with this structure:
 
 ## Key Finder
 
-The Key Finder helps you discover the field concatenation order used to build a hash input string.
+Reverse-engineers the field concatenation order used to build a hash input string.
 
 ### How to Use
 
-1.  Open the **Key Finder** tab (in the main CipherKit tab or inline request editor)
-2.  The request body is auto-parsed into key-value pairs in **Parsed Fields**
-3.  Add any **Additional Values** not in the request body (e.g. an API key the app injects client-side)
-4.  Paste the **Known Concatenated String** — the value you know the server uses as hash input
-5.  Click **Find Key Order**
+1. Open the **Key Finder** tab.
+2. Paste the request body and click **Parse Body** — fields are extracted into **Parsed Fields**.
+3. Add any **Extra Fields** not in the request body (e.g. a static API key the client injects).
+4. Paste the **Known Concatenated String** — the value you know the server signs.
+5. Click **Find Key Order**. Results appear in the right panel.
+
+The brute-force runs in a **background thread** so Burp remains responsive.
 
 ### Example
 
-Given a request body:
+Request body:
 ```json
 {"id": "123", "code": "abc", "name": "heng"}
 ```
 
-And a known concatenated string: `heng123abc`
+Known concatenated string: `heng123abc`
 
-The Key Finder will output:
+Result:
 ```
 1 match found:
   Key order  : name, id, code
   Concat     : heng123abc
 ```
 
-### No Match
+Copy the key order into the **Sign Order** field in the Hash tab.
 
-When no exact permutation match is found, the tool shows:
-- Which field values **were found** in the known string
-- **Unknown segments** — parts of the known string not matching any field value (useful for identifying hidden values like API keys)
+### No Match Diagnostics
+
+When no match is found, the tool shows:
+- Which field values **were** found inside the known string.
+- **Unknown segments** — parts of the known string that don't match any field value (useful for spotting hidden static values or timestamps).
 
 ---
 
@@ -157,69 +265,78 @@ When no exact permutation match is found, the tool shows:
 
 ### Hash / Signature Snippets
 
-Your snippet **MUST** define a `generate` function:
+Define a `generate` function. It can return a plain string or a `(result, debug_log)` tuple.
 
 ```python
 def generate(payload, passcode, custom_data=None, key_order=None):
     """
-    payload:     dict  - Merged JSON data (request body + Custom Data)
-    passcode:    str   - Secret key/IV
-    custom_data: dict  - Dictionary of custom data {key: value} (optional)
-    key_order:   list  - Optional ordered list of keys to sign
+    payload:     dict  - Merged dict of request body fields + custom_data
+    passcode:    str   - The Secret field value
+    custom_data: dict  - Extra Fields key:value pairs
+    key_order:   list  - Ordered list of keys to sign (from Sign Order field)
     """
-    import hashlib
-    import hmac
+    import hmac, hashlib
 
-    # Build your message string from payload using key_order
-    # ...
+    keys = key_order or [k for k in payload.keys() if k != 'sign']
+    message = "".join(str(payload.get(k, "")) for k in keys)
 
-    # Sign and return
-    return hmac.new(key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+    sig = hmac.new(
+        passcode.encode('utf-8'),
+        message.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    debug = "Keys: %s\nMessage: %s" % (keys, message)
+    return sig, debug
 ```
 
-### Crypto (Encryption/Decryption) Snippets
+### Crypto Snippets
 
-Your snippet **MUST** define both `encrypt` and `decrypt` functions:
+Define both `encrypt` and `decrypt` functions. Java crypto classes (`Cipher`, `SecretKeySpec`, `IvParameterSpec`) and `base64` are available in scope.
 
 ```python
-def encrypt(input_text, key_str, iv_str):
-    """
-    input_text: str - The plaintext to encrypt
-    key_str:    str - The encryption key
-    iv_str:     str - The initialization vector (optional)
-    """
-    # Java crypto classes available: Cipher, SecretKeySpec, IvParameterSpec
-    # Return encrypted string (e.g. Base64 encoded)
-    pass
+def encrypt(plaintext, key, iv):
+    # key: str, iv: str (may be empty)
+    # Must return a string (e.g. Base64 ciphertext)
+    kb = key.encode('UTF-8')
+    ib = iv.encode('UTF-8') if iv else kb[:16]
+    sk = SecretKeySpec(kb, 'AES')
+    c  = Cipher.getInstance('AES/CBC/PKCS5Padding')
+    c.init(1, sk, IvParameterSpec(ib))
+    return base64.b64encode(bytes(bytearray(c.doFinal(plaintext.encode('UTF-8')))))
 
-def decrypt(input_text, key_str, iv_str):
-    """
-    input_text: str - The ciphertext (e.g. Base64) to decrypt
-    key_str:    str - The decryption key
-    iv_str:     str - The initialization vector (optional)
-    """
-    # Return decrypted plaintext string
-    pass
+def decrypt(ciphertext_b64, key, iv):
+    # Must return a string (plaintext)
+    kb = key.encode('UTF-8')
+    ib = iv.encode('UTF-8') if iv else kb[:16]
+    sk = SecretKeySpec(kb, 'AES')
+    c  = Cipher.getInstance('AES/CBC/PKCS5Padding')
+    c.init(2, sk, IvParameterSpec(ib))
+    return bytearray(c.doFinal(base64.b64decode(ciphertext_b64))).decode('UTF-8')
 ```
 
 ### Built-in Algorithms
 
 | Algorithm | Key Size | IV Size | Notes |
 |-----------|----------|---------|-------|
-| AES-CBC-128 | 16 bytes (UTF-8) | 16 bytes (blank = reuse key) | PKCS5 padding |
+| AES-CBC-128 | 16 bytes (UTF-8) | 16 bytes (blank = reuse Key) | PKCS5 padding |
 | AES-CBC-256 | 32 bytes (UTF-8) | 16 bytes (required) | PKCS5 padding |
 
-### Snippet Flags
-
-Custom crypto snippets support these flags in the editor:
-
-*   `requires_key` — If true, the Key field is editable. If false, it's dimmed.
-*   `requires_iv` — If true, the IV field is editable. If false, it's dimmed.
+> **Key/IV length errors** show the exact byte count received, e.g. `"AES Key must be 16, 24, or 32 UTF-8 bytes — got 10 byte(s)."` to help diagnose mismatches quickly.
 
 ---
 
 ## Supported Body Formats
 
-*   **JSON** — Parsed as key-value dict, pretty-printed in editor
-*   **URL-encoded** — `key1=value1&key2=value2` format
-*   **Multipart/form-data** — Auto-detects boundary from Content-Type header or body
+| Format | Content-Type | Notes |
+|--------|-------------|-------|
+| JSON | `application/json` | Pretty-printed in editor; default format |
+| URL-encoded | `application/x-www-form-urlencoded` | Full percent-decode (`%20`, `%2F`, etc.) |
+| Multipart | `multipart/form-data` | Boundary auto-detected from body if not in header |
+
+---
+
+## Security Notes
+
+- **Snippet sandbox** — Custom snippet code runs with a restricted `__builtins__` allowlist. `os.system()`, file writes, and network calls are blocked inside snippet execution.
+- **No outbound connections** — CipherKit makes no external calls. All processing is local to the JVM.
