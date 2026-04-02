@@ -100,37 +100,95 @@ On each matching request, CipherKit re-runs the app setting's hash snippet, inje
 
 ### Hash Snippet
 
+Must define a `generate` function. Returns either a plain string or a `(result, debug_log)` tuple — the debug log is shown in the Debug Output area.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `payload` | `dict` | Merged dict of request body fields + custom_data |
+| `passcode` | `str` | Value from the Secret field |
+| `custom_data` | `dict` | Extra key:value pairs from the Custom Data panel |
+| `key_order` | `list` | Ordered key names from the Sign Order field (or `None`) |
+
+**Example — HMAC-SHA256:**
 ```python
 def generate(payload, passcode, custom_data=None, key_order=None):
-    # payload: merged dict of request body + custom_data
-    # Returns a string or (result, debug_log) tuple
     import hmac, hashlib
-    keys = key_order or [k for k in payload.keys() if k != 'sign']
-    message = "".join(str(payload.get(k, "")) for k in keys)
-    sig = hmac.new(passcode.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
-    return sig, "Keys: %s\nMessage: %s" % (keys, message)
+
+    # Use explicit key order if provided, otherwise use all payload keys except 'hash'
+    keys_to_sign = key_order or [k for k in payload.keys() if k != 'hash']
+
+    # Concatenate values in order
+    concat_str = ""
+    for k in keys_to_sign:
+        concat_str += str(payload.get(k, ""))
+
+    # Sign and return result + debug info
+    signature = hmac.new(
+        passcode.encode('utf-8'),
+        concat_str.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    debug_log = "Keys: %s\nMessage: '%s'\nResult: %s" % (keys_to_sign, concat_str, signature)
+    return signature, debug_log
 ```
+
+> Set `requires_key: false` in `snippets.json` to grey out the Secret field for keyless algorithms.
+
+---
 
 ### Crypto Snippet
 
+Must define both `encrypt` and `decrypt` functions in the **same save** (written in separate code areas in the Crypto Editor tab). Both must return a string.
+
+**Parameters:**
+
+| Function | Parameters | Returns |
+|----------|-----------|---------|
+| `encrypt` | `plaintext` (str), `key` (str), `iv` (str) | Base64 ciphertext string |
+| `decrypt` | `ciphertext_b64` (str), `key` (str), `iv` (str) | Plaintext string |
+
+`Cipher`, `SecretKeySpec`, `IvParameterSpec`, and `base64` are pre-imported and available in scope.
+
+**Example — AES-CBC-128:**
 ```python
 def encrypt(plaintext, key, iv):
-    # Must return a string (e.g. Base64 ciphertext)
-    ...
+    # key: 16-char UTF-8 string (AES-128)
+    # iv:  16-char UTF-8 string; leave blank to reuse key bytes
+    key_bytes = key.encode('UTF-8')
+    iv_bytes  = iv.encode('UTF-8') if iv and iv.strip() else key_bytes
 
-def decrypt(ciphertext_b64, key, iv):
-    # Must return a string (plaintext)
-    ...
+    secret_key = SecretKeySpec(key_bytes, 'AES')
+    cipher     = Cipher.getInstance('AES/CBC/PKCS5Padding')
+    cipher.init(Cipher.ENCRYPT_MODE, secret_key, IvParameterSpec(iv_bytes))
+
+    encrypted = cipher.doFinal(plaintext.encode('UTF-8'))
+    return base64.b64encode(bytes(bytearray(encrypted)))
 ```
 
-Java crypto classes (`Cipher`, `SecretKeySpec`, `IvParameterSpec`) and `base64` are available.
+```python
+def decrypt(ciphertext_b64, key, iv):
+    # key: 16-char UTF-8 string (AES-128)
+    # iv:  16-char UTF-8 string; leave blank to reuse key bytes
+    key_bytes = key.encode('UTF-8')
+    iv_bytes  = iv.encode('UTF-8') if iv and iv.strip() else key_bytes
+
+    secret_key = SecretKeySpec(key_bytes, 'AES')
+    cipher     = Cipher.getInstance('AES/CBC/PKCS5Padding')
+    cipher.init(Cipher.DECRYPT_MODE, secret_key, IvParameterSpec(iv_bytes))
+
+    decrypted = cipher.doFinal(base64.b64decode(ciphertext_b64))
+    return bytearray(decrypted).decode('UTF-8')
+```
 
 ### Built-in Algorithms
 
 | Algorithm | Key | IV |
 |-----------|-----|----|
-| AES-CBC-128 | 16 bytes | 16 bytes (blank = reuse Key) |
-| AES-CBC-256 | 32 bytes | 16 bytes (required) |
+| AES-CBC-128 | 16-byte UTF-8 | 16-byte UTF-8 (blank = reuse Key) |
+| AES-CBC-256 | 32-byte UTF-8 | 16-byte UTF-8 (required) |
 
 ---
 
