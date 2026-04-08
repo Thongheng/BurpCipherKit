@@ -18,7 +18,7 @@ from javax.swing.event import DocumentListener
 from javax.swing import Timer as _SwingTimer
 
 from burp import IMessageEditorTab
-from core.utils import _safe_encode
+from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE
 from core.body_parser import parse_body, serialize_body
 from core.snippet_manager import SnippetManager
 from core.crypto_engine import CryptoEngine, AesCbcEngine
@@ -40,6 +40,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._extender = extender
         self._helpers  = extender._helpers
         self._editable = editable
+        self._isRequestContext = False
         self._currentMessage = None
         self._headerBytes    = None
         self._contentType    = ""
@@ -698,6 +699,20 @@ class HashGenEditorTab(IMessageEditorTab):
     def getUiComponent(self):
         return self._panel
 
+    def _resetEditorState(self, content=None):
+        self._currentMessage = content
+        self._headerBytes = None
+        self._contentType = ""
+        self._requestPath = ""
+        self._bodyArea.setText("")
+        self._hashOutput.setEditable(False)
+        self._hashOutput.setText("")
+        self._cryptoAutoMode = False
+        try:
+            self._cryptoDebounceTimer.stop()
+        except Exception:
+            pass
+
     def isEnabled(self, content, isRequest):
         if not isRequest or content is None:
             return False
@@ -710,97 +725,111 @@ class HashGenEditorTab(IMessageEditorTab):
             return False
 
     def setMessage(self, content, isRequest):
-        if content is None:
-            self._bodyArea.setText("")
-            self._currentMessage = None
-            self._headerBytes = None
-            self._contentType = ""
+        self._isRequestContext = bool(isRequest)
+        if content is None or not isRequest:
+            self._resetEditorState(content)
             return
 
-        self._currentMessage = content
-        analyzed = self._helpers.analyzeRequest(content)
-        bodyOffset = analyzed.getBodyOffset()
-
-        self._headerBytes = content[:bodyOffset]
-
-        # Extract Content-Type from headers for body parsing
-        self._contentType = ""
-        for h in analyzed.getHeaders():
-            if h.lower().startswith("content-type:"):
-                self._contentType = h[len("content-type:"):].strip()
-                break
-
-        body = self._helpers.bytesToString(content[bodyOffset:])
-
-        # Pretty-print JSON only; leave form-data as-is
         try:
-            parsed = json.loads(body)
-            body = json.dumps(parsed, indent=2)
-        except:
-            pass
+            self._currentMessage = content
+            analyzed = self._helpers.analyzeRequest(content)
+            bodyOffset = analyzed.getBodyOffset()
 
-        self._bodyArea.setText(body)
-        self._bodyArea.setCaretPosition(0)
+            self._headerBytes = content[:bodyOffset]
 
-        # Extract URL path for app setting matching
-        self._requestPath = ""
-        try:
-            self._requestPath = analyzed.getUrl().getPath()
-        except:
-            pass
+            # Extract Content-Type from headers for body parsing
+            self._contentType = ""
+            for h in analyzed.getHeaders():
+                if h.lower().startswith("content-type:"):
+                    self._contentType = h[len("content-type:"):].strip()
+                    break
 
-        # Try auto-load an app setting matching this URL path
-        setting_loaded = self._tryLoadAppSetting()
+            body = self._helpers.bytesToString(content[bodyOffset:])
 
-        # Only auto-extract keys if no setting was loaded and user hasn't manually edited
-        if not setting_loaded and not self._keysUserEdited:
-            self._tryExtractKeys()
+            # Pretty-print JSON only; leave form-data as-is
+            try:
+                parsed = json.loads(body)
+                body = json.dumps(parsed, indent=2)
+            except:
+                pass
 
-        # Sync remaining config from main tab (only fields not set by app setting)
-        if not setting_loaded:
-            self._syncFromMainTab()
+            self._bodyArea.setText(body)
+            self._bodyArea.setCaretPosition(0)
 
-        # If the Crypto tab is already selected, re-run auto-decrypt now that
-        # key/iv have been populated (the mode-change listener may have fired
-        # before the key was set, producing a spurious "Key is required" error)
-        try:
-            if self._configTabs.getSelectedIndex() == 1:
-                self._onAutoDecrypt()
-        except Exception:
-            pass
+            # Extract URL path for app setting matching
+            self._requestPath = ""
+            try:
+                self._requestPath = analyzed.getUrl().getPath()
+            except:
+                pass
+
+            # Try auto-load an app setting matching this URL path
+            setting_loaded = self._tryLoadAppSetting()
+
+            # Only auto-extract keys if no setting was loaded and user hasn't manually edited
+            if not setting_loaded and not self._keysUserEdited:
+                self._tryExtractKeys()
+
+            # Sync remaining config from main tab (only fields not set by app setting)
+            if not setting_loaded:
+                self._syncFromMainTab()
+
+            # If the Crypto tab is already selected, re-run auto-decrypt now that
+            # key/iv have been populated (the mode-change listener may have fired
+            # before the key was set, producing a spurious "Key is required" error)
+            try:
+                if self._configTabs.getSelectedIndex() == 1:
+                    self._onAutoDecrypt()
+            except Exception:
+                pass
+        except Exception as e:
+            self._resetEditorState(content)
+            print("[CipherKit] Inline tab setMessage error: %s" % str(e))
+            print(traceback.format_exc())
+            return
 
     def getMessage(self):
-        if self._currentMessage is None:
+        if self._currentMessage is None or not self._isRequestContext:
             return self._currentMessage
 
-        body_str = self._bodyArea.getText().strip()
-
         try:
-            parsed = json.loads(body_str)
-            body_str = json.dumps(parsed)
-        except:
-            pass
+            body_str = self._bodyArea.getText().strip()
 
-        body_bytes = self._helpers.stringToBytes(body_str)
+            try:
+                parsed = json.loads(body_str)
+                body_str = json.dumps(parsed)
+            except:
+                pass
 
-        analyzed = self._helpers.analyzeRequest(self._currentMessage)
-        headers = analyzed.getHeaders()
-        return self._helpers.buildHttpMessage(headers, body_bytes)
+            body_bytes = self._helpers.stringToBytes(body_str)
+
+            analyzed = self._helpers.analyzeRequest(self._currentMessage)
+            headers = analyzed.getHeaders()
+            return self._helpers.buildHttpMessage(headers, body_bytes)
+        except Exception as e:
+            print("[CipherKit] Inline tab getMessage error: %s" % str(e))
+            print(traceback.format_exc())
+            return self._currentMessage
 
     def isModified(self):
-        if self._currentMessage is None:
+        if self._currentMessage is None or not self._isRequestContext:
             return False
-        analyzed = self._helpers.analyzeRequest(self._currentMessage)
-        bodyOffset = analyzed.getBodyOffset()
-        originalBody = self._helpers.bytesToString(self._currentMessage[bodyOffset:])
-
-        currentBody = self._bodyArea.getText().strip()
         try:
-            orig = json.dumps(json.loads(originalBody))
-            curr = json.dumps(json.loads(currentBody))
-            return orig != curr
-        except:
-            return originalBody.strip() != currentBody
+            analyzed = self._helpers.analyzeRequest(self._currentMessage)
+            bodyOffset = analyzed.getBodyOffset()
+            originalBody = self._helpers.bytesToString(self._currentMessage[bodyOffset:])
+
+            currentBody = self._bodyArea.getText().strip()
+            try:
+                orig = json.dumps(json.loads(originalBody))
+                curr = json.dumps(json.loads(currentBody))
+                return orig != curr
+            except:
+                return originalBody.strip() != currentBody
+        except Exception as e:
+            print("[CipherKit] Inline tab isModified error: %s" % str(e))
+            print(traceback.format_exc())
+            return False
 
     def getSelectedData(self):
         selected = self._bodyArea.getSelectedText()

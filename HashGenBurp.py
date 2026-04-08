@@ -7,7 +7,7 @@ import os, sys, json, traceback, itertools
 
 from burp import (
     IBurpExtender, ITab, IContextMenuFactory, IContextMenuInvocation,
-    IMessageEditorTabFactory, ISessionHandlingAction
+    IMessageEditorTab, IMessageEditorTabFactory, ISessionHandlingAction
 )
 
 from javax.swing import (
@@ -40,6 +40,36 @@ from ui.editor_tab import HashGenEditorTab
 from ui.components.rounded_border import RoundedBorder, _roundedCompound
 from ui.components.custom_data_panel import CustomDataPanel, CompactCustomDataPanel
 from ui.components.listeners import PayloadDocumentListener, PayloadFocusListener
+
+
+class _DisabledEditorTab(IMessageEditorTab):
+    """Fail-closed IMessageEditorTab placeholder so Burp never receives None."""
+
+    def __init__(self, caption="CipherKit"):
+        self._caption = caption
+        self._panel = JPanel(BorderLayout())
+        self._current_message = None
+
+    def getTabCaption(self):
+        return self._caption
+
+    def getUiComponent(self):
+        return self._panel
+
+    def isEnabled(self, content, isRequest):
+        return False
+
+    def setMessage(self, content, isRequest):
+        self._current_message = content
+
+    def getMessage(self):
+        return self._current_message
+
+    def isModified(self):
+        return False
+
+    def getSelectedData(self):
+        return None
 
 class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFactory, ISessionHandlingAction):
 
@@ -183,7 +213,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         except Exception as e:
             print("[CipherKit] ERROR creating inline tab: %s" % e)
             print(traceback.format_exc())
-            return None
+            return _DisabledEditorTab()
 
     # -------------------------------------------------------------------------
     # IContextMenuFactory implementation
