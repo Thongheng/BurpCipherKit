@@ -9,6 +9,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+.pytest_cache/
+.mypy_cache/
 
 # Virtual environments
 .venv/
@@ -29,6 +31,8 @@ env/
 # Logs
 *.log
 
+# Editor state / telemetry
+.omx/
+
 # Sensitive / local config
 # (snippets.json is intentionally tracked as it holds shared algorithms)
-.DS_Store
