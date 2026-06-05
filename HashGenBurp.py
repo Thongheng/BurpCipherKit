@@ -286,6 +286,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         keyFinderPanel     = self._buildKeyFinderTab()
 
         settingPanel = self._buildSettingTab()
+        timestampPanel = self._buildTimestampTab()
 
         self._tabbedPane.addTab("Hash", generatorPanel)
         self._tabbedPane.addTab("Crypto", cryptoPanel)
@@ -293,6 +294,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._tabbedPane.addTab("Hash Editor", editorPanel)
         self._tabbedPane.addTab("Crypto Editor", cryptoEditorPanel)
         self._tabbedPane.addTab("AppSetting", settingPanel)
+        self._tabbedPane.addTab("Timestamp", timestampPanel)
 
         # Global session-level settings bar (persists until Burp is restarted)
         globalBar = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
@@ -364,6 +366,104 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         mainPanel.add(actRow, BorderLayout.SOUTH)
         
         return mainPanel
+
+    def _buildTimestampTab(self):
+        panel = JPanel(BorderLayout(10, 10))
+        panel.setBorder(EmptyBorder(10, 10, 10, 10))
+
+        # ---- Left: Config panel (styled just like other tabs' left side) ----
+        leftPanel = JPanel(GridBagLayout())
+        leftPanel.setBorder(
+            _roundedCompound(radius=8, padding=10)
+        )
+
+        lgbc = GridBagConstraints()
+        lgbc.insets  = Insets(3, 4, 3, 4)
+        lgbc.anchor  = GridBagConstraints.NORTHWEST
+        lgbc.gridx   = 0
+        lgbc.weightx = 1.0
+        lgbc.fill    = GridBagConstraints.HORIZONTAL
+
+        # Section Label
+        lgbc.gridy = 0
+        lbl = JLabel("Timestamp Options:")
+        leftPanel.add(lbl, lgbc)
+
+        # Checkbox: Auto-copy
+        lgbc.gridy = 1
+        lgbc.insets = Insets(10, 4, 3, 4)
+        self._tsAutoCopyChk = JCheckBox("Auto-copy to clipboard", True)
+        leftPanel.add(self._tsAutoCopyChk, lgbc)
+
+        # Button: Get Timestamp
+        lgbc.gridy = 2
+        lgbc.insets = Insets(20, 4, 4, 4)
+        tsBtn = JButton("Get Timestamp")
+        leftPanel.add(tsBtn, lgbc)
+
+        # Button: Copy to Clipboard
+        lgbc.gridy = 3
+        lgbc.insets = Insets(10, 4, 4, 4)
+        copyBtn = JButton("Copy to Clipboard")
+        leftPanel.add(copyBtn, lgbc)
+
+        # Spacer to push items to the top
+        lgbc.gridy = 4
+        lgbc.weighty = 1.0
+        lgbc.insets = Insets(0, 0, 0, 0)
+        leftPanel.add(JPanel(), lgbc)
+
+        # ---- Right: Text areas with label (matching Hash/Crypto tabs' right side) ----
+        rightPanel = JPanel(GridBagLayout())
+        rgbc = GridBagConstraints()
+        rgbc.gridx   = 0
+        rgbc.weightx = 1.0
+        rgbc.fill    = GridBagConstraints.HORIZONTAL
+        rgbc.insets  = Insets(0, 0, 2, 0)
+
+        # Output label
+        rgbc.gridy  = 0; rgbc.weighty = 0
+        rightPanel.add(JLabel("Timestamp Output:"), rgbc)
+
+        # Output scroll pane
+        rgbc.gridy  = 1; rgbc.weighty = 1.0; rgbc.fill = GridBagConstraints.BOTH
+        tsOutputArea = JTextArea(3, 40)
+        tsOutputArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        tsOutputArea.setLineWrap(True)
+        tsOutputArea.setWrapStyleWord(True)
+        tsOutputArea.setEditable(False)
+        outputScroll = JScrollPane(tsOutputArea)
+        outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+        rightPanel.add(outputScroll, rgbc)
+
+        # Combine left + right with same divider settings as other tabs
+        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
+        splitPane.setDividerLocation(320)
+        splitPane.setResizeWeight(0.0)
+        panel.add(splitPane, BorderLayout.CENTER)
+
+        # Action handlers
+        def _onGetTimestamp(event):
+            import time
+            ms = int(time.time() * 1000)
+            val = str(ms)
+            tsOutputArea.setText(val)
+            if self._tsAutoCopyChk.isSelected():
+                from java.awt.datatransfer import StringSelection
+                from java.awt import Toolkit
+                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(val), None)
+
+        def _onCopyTimestamp(event):
+            txt = tsOutputArea.getText().strip()
+            if txt:
+                from java.awt.datatransfer import StringSelection
+                from java.awt import Toolkit
+                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(txt), None)
+
+        tsBtn.addActionListener(_onGetTimestamp)
+        copyBtn.addActionListener(_onCopyTimestamp)
+
+        return panel
 
     def _buildGeneratorTab(self):
         panel = JPanel(BorderLayout(10, 10))

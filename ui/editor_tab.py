@@ -311,6 +311,34 @@ class HashGenEditorTab(IMessageEditorTab):
         configTabs.addTab("Key Finder", kfPanel)
         configTabs.addTab("AppSetting",     appSettingTabPanel)
 
+        # Timestamp sub-tab panel
+        timestampConfigPanel = JPanel(GridBagLayout())
+        timestampConfigPanel.setBorder(EmptyBorder(6, 6, 6, 6))
+        tgbc = GridBagConstraints()
+        tgbc.insets = Insets(3, 4, 3, 4)
+        tgbc.anchor = GridBagConstraints.WEST
+
+        # Row 0: Option checkbox
+        tgbc.gridy = 0; tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE
+        self._inlineTsAutoCopyChk = JCheckBox("Auto-copy to clipboard", True)
+        timestampConfigPanel.add(self._inlineTsAutoCopyChk, tgbc)
+
+        # Row 0, Col 1: Buttons
+        tgbc.gridx = 1; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
+        tsRow = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        tBtn = JButton("Get Timestamp", actionPerformed=self._onInlineGetTimestamp)
+        tCopyBtn = JButton("Copy", actionPerformed=self._onInlineCopyTimestamp)
+        tsRow.add(tBtn)
+        tsRow.add(tCopyBtn)
+        timestampConfigPanel.add(tsRow, tgbc)
+
+        # Filler row to match the height of other sub-tabs
+        tgbc.gridy = 1; tgbc.gridx = 0; tgbc.gridwidth = 2
+        tgbc.weighty = 1.0; tgbc.fill = GridBagConstraints.VERTICAL
+        timestampConfigPanel.add(JPanel(), tgbc)
+
+        configTabs.addTab("Timestamp",  timestampConfigPanel)
+
         self._configTabs = configTabs
         self._panel.add(configTabs, BorderLayout.NORTH)
 
@@ -420,9 +448,26 @@ class HashGenEditorTab(IMessageEditorTab):
         self._settingInfoArea.setText("(no app setting matched for this request)")
         settingCard.add(JScrollPane(self._settingInfoArea), BorderLayout.CENTER)
 
+        # ---- Card 4: Timestamp ----
+        timestampCard = JPanel(BorderLayout(0, 6))
+        timestampCard.setBorder(EmptyBorder(6, 6, 6, 6))
+        
+        tsWrap = JPanel(BorderLayout(0, 2))
+        tsWrap.add(JLabel("Timestamp Output:"), BorderLayout.NORTH)
+        
+        self._inlineTimestampOutputArea = JTextArea()
+        self._inlineTimestampOutputArea.setEditable(False)
+        self._inlineTimestampOutputArea.setFont(Font("Monospaced", Font.PLAIN, _MONO_FONT_SIZE))
+        self._inlineTimestampOutputArea.setLineWrap(True)
+        self._inlineTimestampOutputArea.setWrapStyleWord(True)
+        tsWrap.add(JScrollPane(self._inlineTimestampOutputArea), BorderLayout.CENTER)
+        
+        timestampCard.add(tsWrap, BorderLayout.CENTER)
+
         centerPanel.add(hashCryptoCard, "hashcrypto")
         centerPanel.add(kfCard,         "keyfinder")
         centerPanel.add(settingCard,    "setting")
+        centerPanel.add(timestampCard,  "timestamp")
         self._panel.add(centerPanel, BorderLayout.CENTER)
 
         # Switch cards + auto-decrypt/parse when tabs change
@@ -450,6 +495,14 @@ class HashGenEditorTab(IMessageEditorTab):
                         _outer._hashOutput.setText(_outer._lastHashText)
                         _outer._cardLayout.show(centerPanel, "setting")
                         _outer._onSettingTabFocus()
+                    elif idx == 4:  # Timestamp tab
+                        _outer._outputLabel.setText("Hash Output: ")
+                        _outer._autoEncryptChk.setVisible(False)
+                        _outer._cryptoAutoMode = False
+                        _outer._cryptoDebounceTimer.stop()
+                        _outer._hashOutput.setEditable(False)
+                        _outer._hashOutput.setText(_outer._lastHashText)
+                        _outer._cardLayout.show(centerPanel, "timestamp")
                     else:
                         _outer._cardLayout.show(centerPanel, "hashcrypto")
                         if idx == 1:  # Crypto tab
@@ -1248,6 +1301,23 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._bodyArea.setText(formatted)
         except:
             pass
+
+    def _onInlineGetTimestamp(self, event=None):
+        import time
+        ms = int(time.time() * 1000)
+        val = str(ms)
+        self._inlineTimestampOutputArea.setText(val)
+        if self._inlineTsAutoCopyChk.isSelected():
+            from java.awt.datatransfer import StringSelection
+            from java.awt import Toolkit
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(val), None)
+
+    def _onInlineCopyTimestamp(self, event=None):
+        txt = self._inlineTimestampOutputArea.getText().strip()
+        if txt:
+            from java.awt.datatransfer import StringSelection
+            from java.awt import Toolkit
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(txt), None)
 
 
 # =============================================================================
