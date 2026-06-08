@@ -18,7 +18,7 @@ from javax.swing.event import DocumentListener
 from javax.swing import Timer as _SwingTimer
 
 from burp import IMessageEditorTab
-from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE
+from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE, _MAX_KF_FIELDS
 from core.body_parser import parse_body, serialize_body
 from core.snippet_manager import SnippetManager
 from core.crypto_engine import CryptoEngine, AesCbcEngine
@@ -359,7 +359,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._bodyArea.setLineWrap(True)
         self._bodyArea.setWrapStyleWord(True)
         self._bodyArea.setEditable(editable)
-        self._bodyArea.addFocusListener(PayloadFocusListener(self._tryFormatJson))
+        # Focus listener removed to prevent automatically rewriting float formatting (e.g. 12.00 to 12.0)
         bodyScroll = JScrollPane(self._bodyArea)
         bodyScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         bodyWrap.add(bodyScroll, BorderLayout.CENTER)
@@ -678,71 +678,87 @@ class HashGenEditorTab(IMessageEditorTab):
             self._inlineKfParsedArea.setText("Parse error: %s" % str(e))
 
     def _onInlineKfFind(self, event=None):
-        """Brute-force key order from inline Key Finder fields."""
-        from collections import OrderedDict
-        known = str(self._inlineKfKnownArea.getText().strip())
-        if not known:
-            self._inlineKfResultArea.setText("Please enter the known concatenated string.")
-            return
+        """Find key order from inline Key Finder fields using DFS backtracking."""
+        try:
+            from collections import OrderedDict
+            known = str(self._inlineKfKnownArea.getText().strip())
+            if not known:
+                self._inlineKfResultArea.setText("Please enter the known concatenated string.")
+                return
 
-        pairs = OrderedDict()
-        # Parsed fields
-        for line in self._inlineKfParsedArea.getText().strip().splitlines():
-            line = line.strip()
-            if ":" in line:
-                k, _, v = line.partition(":")
-                pairs[k.strip()] = v.strip()
-        # Extra Fields panel (N-06: CompactCustomDataPanel)
-        for k, v in self._inlineKfAdditionalPanel.getPairs().items():
-            if k:
-                pairs[k] = v
+            pairs = OrderedDict()
+            # Parsed fields
+            for line in self._inlineKfParsedArea.getText().strip().splitlines():
+                line = line.strip()
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    pairs[k.strip()] = v.strip()
+            # Extra Fields panel (CompactCustomDataPanel)
+            for k, v in self._inlineKfAdditionalPanel.getPairs().items():
+                if k:
+                    pairs[k] = v
 
-        if not pairs:
-            self._inlineKfResultArea.setText("No fields found. Click Parse Body first.")
-            return
-        if len(pairs) > _MAX_KF_FIELDS:
-            self._inlineKfResultArea.setText("Too many fields (max 10). Edit Parsed Fields to keep only relevant keys.")
-            return
+            if not pairs:
+                self._inlineKfResultArea.setText("No fields found. Click Parse Body first.")
+                return
 
-        keys = list(pairs.keys())
-        matches = []
-        total = 0
-        for size in range(1, len(keys) + 1):
-            for subset in itertools.combinations(keys, size):
-                for perm in itertools.permutations(subset):
-                    total += 1
-                    if "".join(str(pairs[k]) for k in perm) == known:
-                        matches.append(perm)
+            # Backtracking DFS search
+            matches = []
+            total_visited = [0]
+            values = {k: str(v) for k, v in pairs.items()}
+            
+            def dfs(current_perm, remaining_keys, remaining_known):
+                total_visited[0] += 1
+                if len(matches) >= 100 or total_visited[0] >= 10000:
+                    return
+                if not remaining_known:
+                    if current_perm:
+                        matches.append(current_perm)
+                    return
+                for k in remaining_keys:
+                    val = values[k]
+                    if not val:
+                        continue
+                    if remaining_known.startswith(val):
+                        next_keys = [x for x in remaining_keys if x != k]
+                        dfs(current_perm + (k,), next_keys, remaining_known[len(val):])
+            
+            dfs((), list(pairs.keys()), known)
 
-        if not matches:
-            lines = ["No match found.", ""]
-            # Show which field values appear in the known string
-            found_keys = [(k, v) for k, v in pairs.items() if v and str(v) in known]
-            if found_keys:
-                lines.append("Values found in known string:")
-                for k, v in found_keys:
-                    lines.append("  %s : %s" % (k, v))
-                lines.append("")
-            # Find segments in the known string not covered by any field value
-            remaining = known
-            for _, v in found_keys:
-                remaining = remaining.replace(str(v), "\x00", 1)
-            unknown_parts = [p for p in remaining.split("\x00") if p]
-            if unknown_parts:
-                lines.append("Unknown segment(s) not from any field:")
-                for part in unknown_parts:
-                    lines.append("  %s" % part)
-            self._inlineKfResultArea.setText("\n".join(lines))
-        else:
-            lines = []
-            for i, perm in enumerate(matches, 1):
-                if len(matches) > 1:
-                    lines.append("Match #%d:" % i)
-                lines.append("Key order : %s" % ", ".join(perm))
-                lines.append("Concat    : %s" % "".join(str(pairs[k]) for k in perm))
-                if i < len(matches):
+            if not matches:
+                lines = ["No match found.", ""]
+                # Show which field values appear in the known string
+                found_keys = [(k, v) for k, v in pairs.items() if v and str(v) in known]
+                if found_keys:
+                    lines.append("Values found in known string:")
+                    for k, v in found_keys:
+                        lines.append("  %s : %s" % (k, v))
                     lines.append("")
-            self._inlineKfResultArea.setText("\n".join(lines))
+                # Find segments in the known string not covered by any field value
+                remaining = known
+                for _, v in found_keys:
+                    remaining = remaining.replace(str(v), "\x00", 1)
+                unknown_parts = [p for p in remaining.split("\x00") if p]
+                if unknown_parts:
+                    lines.append("Unknown segment(s) not from any field:")
+                    for part in unknown_parts:
+                        lines.append("  %s" % part)
+                self._inlineKfResultArea.setText("\n".join(lines))
+            else:
+                lines = []
+                for i, perm in enumerate(matches, 1):
+                    if len(matches) > 1:
+                        lines.append("Match #%d:" % i)
+                    lines.append("Key order : %s" % ", ".join(perm))
+                    lines.append("Concat    : %s" % "".join(str(pairs[k]) for k in perm))
+                    if i < len(matches):
+                        lines.append("")
+                if len(matches) >= 100 or total_visited[0] >= 10000:
+                    lines.append("")
+                    lines.append("(Note: search was capped at 100 matches to optimize performance)")
+                self._inlineKfResultArea.setText("\n".join(lines))
+        except Exception as e:
+            self._inlineKfResultArea.setText("Error: %s\n%s" % (str(e), traceback.format_exc()))
 
     # --- IMessageEditorTab interface ---
 
@@ -799,13 +815,8 @@ class HashGenEditorTab(IMessageEditorTab):
 
             body = self._helpers.bytesToString(content[bodyOffset:])
 
-            # Pretty-print JSON only; leave form-data as-is
-            try:
-                parsed = json.loads(body)
-                body = json.dumps(parsed, indent=2)
-            except:
-                pass
-
+            # Display the body exactly as it is in the request without pretty-printing,
+            # which would alter floating point numbers (e.g. converting 12.00 to 12.0)
             self._bodyArea.setText(body)
             self._bodyArea.setCaretPosition(0)
 
@@ -846,14 +857,7 @@ class HashGenEditorTab(IMessageEditorTab):
             return self._currentMessage
 
         try:
-            body_str = self._bodyArea.getText().strip()
-
-            try:
-                parsed = json.loads(body_str)
-                body_str = json.dumps(parsed)
-            except:
-                pass
-
+            body_str = self._bodyArea.getText()
             body_bytes = self._helpers.stringToBytes(body_str)
 
             analyzed = self._helpers.analyzeRequest(self._currentMessage)
@@ -870,15 +874,9 @@ class HashGenEditorTab(IMessageEditorTab):
         try:
             analyzed = self._helpers.analyzeRequest(self._currentMessage)
             bodyOffset = analyzed.getBodyOffset()
-            originalBody = self._helpers.bytesToString(self._currentMessage[bodyOffset:])
-
+            originalBody = self._helpers.bytesToString(self._currentMessage[bodyOffset:]).strip()
             currentBody = self._bodyArea.getText().strip()
-            try:
-                orig = json.dumps(json.loads(originalBody))
-                curr = json.dumps(json.loads(currentBody))
-                return orig != curr
-            except:
-                return originalBody.strip() != currentBody
+            return originalBody != currentBody
         except Exception as e:
             print("[CipherKit] Inline tab isModified error: %s" % str(e))
             print(traceback.format_exc())

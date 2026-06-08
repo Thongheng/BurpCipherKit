@@ -609,9 +609,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._payloadArea.getDocument().addDocumentListener(
             PayloadDocumentListener(self._tryExtractKeys)
         )
-        self._payloadArea.addFocusListener(
-            PayloadFocusListener(self._tryFormatJson)
-        )
+        # Focus listener removed to prevent automatically rewriting float formatting (e.g. 12.00 to 12.0)
         payloadScroll = JScrollPane(self._payloadArea)
         payloadScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         rightPanel.add(payloadScroll, gbc)
@@ -1286,13 +1284,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._kfResultArea.setText("No fields found. Paste a body and click Parse Body first.")
             return
 
-        if len(pairs) > _MAX_KF_FIELDS:
-            self._kfResultArea.setText(
-                "Warning: %d fields is too many to brute-force.\n"
-                "Reduce to 10 fields or fewer." % len(pairs)
-            )
-            return
-
         self._kfResultArea.setText("Searching... (running in background)")
 
         _outer = self
@@ -1303,23 +1294,33 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         import threading as _threading
 
         def _run():
-            keys   = list(_pairs_snap.keys())
-            values = _pairs_snap
+            keys = list(_pairs_snap.keys())
+            values = {k: str(v) for k, v in _pairs_snap.items()}
             matches = []
-            total   = 0
+            total_visited = [0]
 
-            for size in range(1, len(keys) + 1):
-                for subset in itertools.combinations(keys, size):
-                    for perm in itertools.permutations(subset):
-                        total += 1
-                        concat = _sep_snap.join(str(values[k]) for k in perm)
-                        if concat == _known_snap:
-                            matches.append(perm)
+            def dfs(current_perm, remaining_keys, remaining_known):
+                total_visited[0] += 1
+                if len(matches) >= 100 or total_visited[0] >= 10000:
+                    return
+                if not remaining_known:
+                    if current_perm:
+                        matches.append(current_perm)
+                    return
+                for k in remaining_keys:
+                    val = values[k]
+                    if not val:
+                        continue
+                    if remaining_known.startswith(val):
+                        next_keys = [x for x in remaining_keys if x != k]
+                        dfs(current_perm + (k,), next_keys, remaining_known[len(val):])
+
+            dfs((), keys, _known_snap)
 
             lines = []
             lines.append("Known string : '%s'" % _known_snap)
             lines.append("Fields tried : %s" % ", ".join(keys))
-            lines.append("Permutations : %d (all subsets)" % total)
+            lines.append("States visited: %d" % total_visited[0])
             lines.append("-" * 50)
 
             if not matches:
@@ -1338,6 +1339,9 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                     lines.append("Match #%d:" % i)
                     lines.append("  Key order  : %s" % key_order_str)
                     lines.append("  Concat     : '%s'" % concat_show)
+                    lines.append("")
+                if len(matches) >= 100 or total_visited[0] >= 10000:
+                    lines.append("(Note: search was capped at 100 matches to optimize performance)")
                     lines.append("")
                 lines.append("Copy the key order above into the Hash tab's 'Keys Order' field.")
 
