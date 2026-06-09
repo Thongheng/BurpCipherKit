@@ -35,7 +35,7 @@ from core.app_setting_manager import AppSettingManager
 from core.body_parser import parse_body, serialize_body
 from core.crypto_engine import CryptoEngine
 from core.crypto_snippet_engine import CryptoSnippetEngine
-from core.utils import _MAX_KF_FIELDS
+from core.utils import _MAX_KF_FIELDS, _extract_request_path
 from ui.editor_tab import HashGenEditorTab
 from ui.components.rounded_border import RoundedBorder, _roundedCompound
 from ui.components.custom_data_panel import CustomDataPanel, CompactCustomDataPanel
@@ -134,11 +134,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 return  # nothing to sign
 
             # Extract URL path for app setting lookup
-            url_path = ""
-            try:
-                url_path = req_info.getUrl().getPath()
-            except Exception:
-                pass
+            url_path = _extract_request_path(req_info)
 
             # Find a matching app setting
             app_name, app, pattern, ep = self.app_setting_manager.find_by_url(url_path)
@@ -161,6 +157,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             algo_name   = app.get("algorithm", "")
             secret      = app.get("secret", "")
             custom_data = app.get("custom_data", {})
+            if ep and "custom_data" in ep:
+                custom_data = ep["custom_data"]
             hash_field  = app.get("hash_field", "hash")
             keys_order  = None
             if ep and ep.get("keys_order"):
@@ -179,15 +177,19 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 print("[CipherKit] Auto-Rehash error: %s" % result)
                 return
 
+            result_str = str(result)
+            if self._globalUppercaseHashChk.isSelected():
+                result_str = result_str.upper()
+
             # Inject the new hash back into the body
-            payload[hash_field] = str(result)
+            payload[hash_field] = result_str
             new_body = serialize_body(payload, body_str, content_type)
             new_body_bytes = self._helpers.stringToBytes(new_body)
             new_request = self._helpers.buildHttpMessage(headers, new_body_bytes)
             currentRequest.setRequest(new_request)
 
             print("[CipherKit] Auto-Rehash: app_setting='%s' pattern='%s' hash_field='%s' value='%s'" % (
-                app_name, pattern, hash_field, str(result)[:40]
+                app_name, pattern, hash_field, result_str[:40]
             ))
 
         except Exception as e:
@@ -312,6 +314,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             "Session-wide toggle: uncheck to disable auto-encrypt in all CipherKit request tabs"
         )
         globalBar.add(self._globalAutoEncryptChk)
+        # Global uppercase hash toggle
+        self._globalUppercaseHashChk = JCheckBox("Uppercase hash", True)
+        self._globalUppercaseHashChk.setToolTipText(
+            "Session-wide toggle: check to force all generated hashes to uppercase"
+        )
+        globalBar.add(self._globalUppercaseHashChk)
         self._mainPanel.add(globalBar, BorderLayout.SOUTH)
 
     # -------------------------------------------------------------------------
@@ -874,6 +882,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             if endpoints:
                 first_ep = list(endpoints.values())[0]
                 self._keysOrderField.setText(first_ep.get("keys_order", ""))
+                if "custom_data" in first_ep:
+                    self._customDataPanel.setPairs(first_ep["custom_data"])
             # Crypto config
             c = app.get("crypto", {})
             if c.get("mode"):
@@ -977,6 +987,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             lines.append("  Algorithm : %s" % app.get("algorithm", ""))
             lines.append("  Secret    : %s" % app.get("secret", ""))
             lines.append("  Hash Field: %s" % app.get("hash_field", ""))
+            custom_data = app.get("custom_data", {})
+            if custom_data:
+                custom_str = ", ".join("%s=%s" % (k, v) for k, v in custom_data.items())
+                lines.append("  Custom Data: %s" % custom_str)
             c = app.get("crypto", {})
             if c:
                 lines.append("")
@@ -991,7 +1005,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 lines.append("Endpoints")
                 lines.append("-" * 44)
                 for pat, ep in endpoints.items():
-                    lines.append("  %-30s  %s" % (pat, ep.get("keys_order", "")))
+                    custom_str = ""
+                    if "custom_data" in ep and ep["custom_data"]:
+                        custom_str = " [Custom: %s]" % ", ".join("%s=%s" % (k, v) for k, v in ep["custom_data"].items())
+                    lines.append("  %-30s  %s%s" % (pat, ep.get("keys_order", ""), custom_str))
             else:
                 lines.append("")
                 lines.append("No endpoints saved yet.")
@@ -1505,7 +1522,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 snippet["code"], payload, passcode, custom_data, key_order
             )
 
-            self._outputArea.setText(str(result))
+            result_str = str(result)
+            if not result_str.startswith("Error") and self._globalUppercaseHashChk.isSelected():
+                result_str = result_str.upper()
+
+            self._outputArea.setText(result_str)
             self._debugArea.setText(str(debug_log))
 
         except Exception as e:

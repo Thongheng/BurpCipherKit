@@ -1,37 +1,69 @@
 {
   "Sample App - /api/v1": {
-    "algorithm": "HMAC-SHA256",
-    "secret": "super_secret_key_123",
+    "endpoints": {
+      "/api/v1/login": {
+        "keys_order": "username, password, timestamp"
+      }, 
+      "/api/v1/profile": {
+        "keys_order": "userId, timestamp"
+      }, 
+      "/api/v1/orders/*": {
+        "keys_order": "orderId, timestamp"
+      }
+    }, 
+    "secret": "super_secret_key_123", 
+    "crypto": {
+      "iv": "", 
+      "field": "encrypted_data", 
+      "key": "1234567890123456", 
+      "algorithm": "AES-CBC-128"
+    }, 
+    "hash_field": "signature", 
     "custom_data": {
-      "API_VERSION": "1.0",
+      "API_VERSION": "1.0", 
       "CLIENT_TYPE": "MOBILE"
-    },
-    "hash_field": "signature",
-    "crypto": {
-      "algorithm": "AES-CBC-128",
-      "key": "1234567890123456",
-      "iv": "",
-      "field": "encrypted_data"
-    },
+    }, 
+    "algorithm": "HMAC-SHA256"
+  }, 
+  "ABA Mobile": {
     "endpoints": {
-      "/api/v1/login": { "keys_order": "username, password, timestamp" },
-      "/api/v1/profile": { "keys_order": "userId, timestamp" },
-      "/api/v1/orders/*": { "keys_order": "orderId, timestamp" }
-    }
-  },
+      "/api/v3/mini_app_pay": {
+        "keys_order": "aba_id, trx_id, vendor, from_acc, to_acc, amount, commission, ccy, ts, token"
+      }, 
+      "/api/v3/pay_accs": {
+        "keys_order": "aba_id, amount, ccy, device_id, ts, token"
+      }, 
+      "/api/v3/pre_submit2": {
+        "keys_order": "aba_id, type, amount, curr, account, vendor, ts, token"
+      }
+    }, 
+    "secret": "", 
+    "crypto": {
+      "iv": "", 
+      "mode": "Decrypt", 
+      "field": "data", 
+      "key": "", 
+      "algorithm": "AES-CBC-256"
+    }, 
+    "hash_field": "hash", 
+    "custom_data": {}, 
+    "algorithm": "SHA-1"
+  }, 
   "Legacy App - /services": {
-    "algorithm": "SHA256",
-    "secret": "",
-    "custom_data": {},
-    "hash_field": "hash",
-    "crypto": {
-      "algorithm": "AES-CBC-128",
-      "key": "static_key_legacy",
-      "iv": "static_iv_legacy",
-      "field": "payload"
-    },
     "endpoints": {
-      "/services/auth": { "keys_order": "user, nonce" }
-    }
+      "/services/auth": {
+        "keys_order": "user, nonce"
+      }
+    }, 
+    "secret": "", 
+    "crypto": {
+      "iv": "static_iv_legacy", 
+      "field": "payload", 
+      "key": "static_key_legacy", 
+      "algorithm": "AES-CBC-128"
+    }, 
+    "hash_field": "hash", 
+    "custom_data": {}, 
+    "algorithm": "SHA256"
   }
 }

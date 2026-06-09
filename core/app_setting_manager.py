@@ -86,12 +86,15 @@ class AppSettingManager(object):
         self.app_settings[name] = data
         self.save()
 
-    def save_endpoint(self, app_name, url_pattern, keys_order):
-        """Add or update a single endpoint's keys_order under an app."""
+    def save_endpoint(self, app_name, url_pattern, keys_order, custom_data=None):
+        """Add or update a single endpoint's keys_order and custom_data under an app."""
         if app_name not in self.app_settings:
             self.app_settings[app_name] = {"endpoints": {}}
         self.app_settings[app_name].setdefault("endpoints", {})
-        self.app_settings[app_name]["endpoints"][url_pattern] = {"keys_order": keys_order}
+        ep_data = {"keys_order": keys_order}
+        if custom_data is not None:
+            ep_data["custom_data"] = custom_data
+        self.app_settings[app_name]["endpoints"][url_pattern] = ep_data
         self.save()
 
     def delete_app(self, name):

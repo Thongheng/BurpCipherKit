@@ -18,7 +18,7 @@ from javax.swing.event import DocumentListener
 from javax.swing import Timer as _SwingTimer
 
 from burp import IMessageEditorTab
-from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE, _MAX_KF_FIELDS
+from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE, _MAX_KF_FIELDS, _extract_request_path
 from core.body_parser import parse_body, serialize_body
 from core.snippet_manager import SnippetManager
 from core.crypto_engine import CryptoEngine, AesCbcEngine
@@ -607,8 +607,11 @@ class HashGenEditorTab(IMessageEditorTab):
             self._algoCombo.setSelectedItem(app["algorithm"])
         if "secret" in app:
             self._passcodeField.setText(app["secret"])
-        if app.get("custom_data"):
-            self._customDataPanel.setPairs(app["custom_data"])
+        custom_data = app.get("custom_data")
+        if ep and "custom_data" in ep:
+            custom_data = ep["custom_data"]
+        if custom_data is not None:
+            self._customDataPanel.setPairs(custom_data)
         if "hash_field" in app:
             self._hashFieldName.setText(app["hash_field"])
         c = app.get("crypto", {})
@@ -821,11 +824,7 @@ class HashGenEditorTab(IMessageEditorTab):
             self._bodyArea.setCaretPosition(0)
 
             # Extract URL path for app setting matching
-            self._requestPath = ""
-            try:
-                self._requestPath = analyzed.getUrl().getPath()
-            except:
-                pass
+            self._requestPath = _extract_request_path(analyzed)
 
             # Try auto-load an app setting matching this URL path
             setting_loaded = self._tryLoadAppSetting()
@@ -991,7 +990,8 @@ class HashGenEditorTab(IMessageEditorTab):
         }
         self._extender.app_setting_manager.save_app(app_name, app_data)
         if pattern:
-            self._extender.app_setting_manager.save_endpoint(app_name, pattern, keys_order)
+            custom_data = self._customDataPanel.getPairs()
+            self._extender.app_setting_manager.save_endpoint(app_name, pattern, keys_order, custom_data)
 
         self._refreshInlineSettingCombo()
         self._inlineSettingCombo.setSelectedItem(app_name)
@@ -1081,6 +1081,10 @@ class HashGenEditorTab(IMessageEditorTab):
             lines.append("  Algorithm : %s" % app.get("algorithm", ""))
             lines.append("  Secret    : %s" % app.get("secret", ""))
             lines.append("  Hash Field: %s" % app.get("hash_field", ""))
+            custom_data = app.get("custom_data", {})
+            if custom_data:
+                custom_str = ", ".join("%s=%s" % (k, v) for k, v in custom_data.items())
+                lines.append("  Custom Data: %s" % custom_str)
             c = app.get("crypto", {})
             if c:
                 lines.append("")
@@ -1096,7 +1100,10 @@ class HashGenEditorTab(IMessageEditorTab):
                 lines.append("-" * 40)
                 for pat, ep in endpoints.items():
                     matched = " < matched" if pat and pat in path else ""
-                    lines.append("  %-28s  %s%s" % (pat, ep.get("keys_order", ""), matched))
+                    custom_str = ""
+                    if "custom_data" in ep and ep["custom_data"]:
+                        custom_str = " [Custom: %s]" % ", ".join("%s=%s" % (k, v) for k, v in ep["custom_data"].items())
+                    lines.append("  %-28s  %s%s%s" % (pat, ep.get("keys_order", ""), custom_str, matched))
             else:
                 lines.append("")
                 lines.append("No endpoints saved yet.")
@@ -1263,9 +1270,15 @@ class HashGenEditorTab(IMessageEditorTab):
             if keys_str:
                 key_order = [k.strip() for k in keys_str.split(',') if k.strip()]
 
-            return CryptoEngine.execute_snippet(
+            result, debug_log = CryptoEngine.execute_snippet(
                 snippet["code"], payload, passcode, custom_data, key_order
             )
+
+            result_str = str(result)
+            if not result_str.startswith("Error") and self._extender._globalUppercaseHashChk.isSelected():
+                result_str = result_str.upper()
+
+            return result_str, debug_log
         except Exception as e:
             return "Error: %s" % str(e), traceback.format_exc()
 
