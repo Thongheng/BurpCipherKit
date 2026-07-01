@@ -422,125 +422,98 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        # --- Left side: inputs ---
-        leftPanel = JPanel(GridBagLayout())
-        leftPanel.setBorder(
+        # --- Top side: compact inputs in 4 columns ---
+        topPanel = JPanel(GridBagLayout())
+        topPanel.setBorder(
             _roundedCompound(radius=8, padding=10)
         )
 
-        lgbc = GridBagConstraints()
-        lgbc.insets = Insets(3, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.NORTHWEST
-        lgbc.gridx = 0
-        lgbc.weightx = 1.0
-        lgbc.fill = GridBagConstraints.HORIZONTAL
+        tgbc = GridBagConstraints()
+        tgbc.insets = Insets(4, 5, 4, 5)
+        tgbc.fill = GridBagConstraints.HORIZONTAL
+        tgbc.weightx = 0.5
+        tgbc.gridy = 0
 
-        # Algorithm
-        lgbc.gridy = 0
-        lgbc.insets = Insets(3, 4, 3, 4)
-        lbl = JLabel("Algorithm:")
-        leftPanel.add(lbl, lgbc)
-
-        lgbc.gridy = 1
         names = self.snippet_manager.get_all_names()
         if not names:
             names = ["Default"]
         self._algoCombo = JComboBox(names)
         self._algoCombo.addActionListener(lambda e: self._updatePasscodeFieldState())
-        leftPanel.add(self._algoCombo, lgbc)
-
-        # Secret
-        lgbc.gridy = 2
-        lgbc.insets = Insets(10, 4, 3, 4)
-        lbl = JLabel("Secret:")
-        leftPanel.add(lbl, lgbc)
-
-        lgbc.gridy = 3
-        lgbc.insets = Insets(3, 4, 3, 4)
+        
         self._passcodeField = JTextField()
-        self._passcodeLabel = lbl
-        leftPanel.add(self._passcodeField, lgbc)
-        SwingUtilities.invokeLater(lambda: self._updatePasscodeFieldState())
-
-        # Custom Data
-        lgbc.gridy = 4
-        lgbc.insets = Insets(10, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.WEST
-        lbl = JLabel("Custom Data:")
-        leftPanel.add(lbl, lgbc)
-
-        lgbc.gridy = 5
-        lgbc.insets = Insets(3, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.NORTHWEST
+        self._passcodeLabel = JLabel("Secret:")
+        
         self._customDataPanel = CustomDataPanel()
-        leftPanel.add(self._customDataPanel, lgbc)
-
-        # Keys Order
-        lgbc.gridy = 6
-        lgbc.insets = Insets(10, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.WEST
-        lbl = JLabel("Sign Order (comma separated):")
-        leftPanel.add(lbl, lgbc)
-
-        lgbc.gridy = 7
-        lgbc.insets = Insets(3, 4, 3, 4)
+        
         self._keysOrderField = JTextField()
-        leftPanel.add(self._keysOrderField, lgbc)
-
-        # Hash Field
-        lgbc.gridy = 8
-        lgbc.insets = Insets(10, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.WEST
-        leftPanel.add(JLabel("Output Field:"), lgbc)
-
-        lgbc.gridy = 9
-        lgbc.insets = Insets(3, 4, 3, 4)
+        
         self._mainHashFieldName = JTextField("hash")
         self._mainHashFieldName.setToolTipText("JSON key name where the output will be injected")
-        leftPanel.add(self._mainHashFieldName, lgbc)
-
-        # Body Format
-        lgbc.gridy = 10
-        lgbc.insets = Insets(10, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.WEST
-        lbl = JLabel("Body Format:")
-        leftPanel.add(lbl, lgbc)
-
-        lgbc.gridy = 11
-        lgbc.insets = Insets(3, 4, 3, 4)
+        
         self._bodyFormatCombo = JComboBox(["JSON", "URL-encoded", "multipart/form-data"])
-        leftPanel.add(self._bodyFormatCombo, lgbc)
-
-        # Boundary (only relevant for multipart)
-        lgbc.gridy = 12
-        lgbc.insets = Insets(6, 4, 3, 4)
-        lgbc.anchor = GridBagConstraints.WEST
-        lbl = JLabel("Boundary (multipart only):")
-        leftPanel.add(lbl, lgbc)
-
-        lgbc.gridy = 13
-        lgbc.insets = Insets(3, 4, 3, 4)
+        
         self._boundaryField = JTextField()
         self._boundaryField.setToolTipText("Paste the boundary value from Content-Type header (without leading --)")
-        leftPanel.add(self._boundaryField, lgbc)
-
-        # Generate button
-        lgbc.gridy = 14
-        lgbc.insets = Insets(20, 4, 4, 4)
-        lgbc.anchor = GridBagConstraints.NORTHWEST
+        
         self._generateBtn = JButton("Generate", actionPerformed=self._onGenerate)
-        leftPanel.add(self._generateBtn, lgbc)
 
-        # Spacer
-        lgbc.gridy = 15
-        lgbc.weighty = 1.0
-        lgbc.insets = Insets(0, 0, 0, 0)
-        leftPanel.add(JPanel(), lgbc)
+        # Row 0: Algo & Secret
+        tgbc.gridy = 0
+        tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Algorithm:"), tgbc)
+        tgbc.gridx = 1; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._algoCombo, tgbc)
+        
+        tgbc.gridx = 2; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE; tgbc.insets = Insets(4, 16, 4, 5)
+        topPanel.add(self._passcodeLabel, tgbc)
+        tgbc.gridx = 3; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL; tgbc.insets = Insets(4, 5, 4, 5)
+        topPanel.add(self._passcodeField, tgbc)
+        
+        SwingUtilities.invokeLater(lambda: self._updatePasscodeFieldState())
 
+        # Row 1: Sign Order & Output Field
+        tgbc.gridy = 1
+        tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Sign Order:"), tgbc)
+        tgbc.gridx = 1; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._keysOrderField, tgbc)
+        
+        tgbc.gridx = 2; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE; tgbc.insets = Insets(4, 16, 4, 5)
+        topPanel.add(JLabel("Output Field:"), tgbc)
+        tgbc.gridx = 3; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL; tgbc.insets = Insets(4, 5, 4, 5)
+        topPanel.add(self._mainHashFieldName, tgbc)
 
-        # -- Right side: text areas with label above each box --
-        rightPanel = JPanel(GridBagLayout())
-        rightPanel.setBorder(EmptyBorder(0, 0, 0, 0))
+        # Row 2: Body Format & Boundary
+        tgbc.gridy = 2
+        tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Body Format:"), tgbc)
+        tgbc.gridx = 1; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._bodyFormatCombo, tgbc)
+        
+        tgbc.gridx = 2; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE; tgbc.insets = Insets(4, 16, 4, 5)
+        topPanel.add(JLabel("Boundary:"), tgbc)
+        tgbc.gridx = 3; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL; tgbc.insets = Insets(4, 5, 4, 5)
+        topPanel.add(self._boundaryField, tgbc)
+
+        # Row 3: Custom Data (spans columns 1-3)
+        tgbc.gridy = 3
+        tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE; tgbc.anchor = GridBagConstraints.NORTHWEST
+        topPanel.add(JLabel("Custom Data:"), tgbc)
+        tgbc.gridx = 1; tgbc.gridwidth = 3; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL; tgbc.anchor = GridBagConstraints.WEST
+        topPanel.add(self._customDataPanel, tgbc)
+        tgbc.gridwidth = 1  # restore
+
+        # Row 4: Buttons (spans columns 0-3)
+        tgbc.gridy = 4
+        tgbc.gridx = 0; tgbc.gridwidth = 4; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
+        tgbc.insets = Insets(8, 5, 4, 5)
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
+        btnPanel.add(self._generateBtn)
+        topPanel.add(btnPanel, tgbc)
+
+        # --- Bottom side: text areas with label above each box ---
+        bottomPanel = JPanel(GridBagLayout())
+        bottomPanel.setBorder(EmptyBorder(0, 0, 0, 0))
         gbc = GridBagConstraints()
         gbc.gridx   = 0
         gbc.weightx = 1.0
@@ -549,7 +522,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
 
         # Payload label
         gbc.gridy  = 0; gbc.weighty = 0
-        rightPanel.add(JLabel("Payload:"), gbc)
+        bottomPanel.add(JLabel("Payload:"), gbc)
 
         # Payload text area
         gbc.gridy  = 1; gbc.weighty = 1.0; gbc.fill = GridBagConstraints.BOTH
@@ -562,15 +535,14 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._payloadArea.getDocument().addDocumentListener(
             PayloadDocumentListener(self._tryExtractKeys)
         )
-        # Focus listener removed to prevent automatically rewriting float formatting (e.g. 12.00 to 12.0)
         payloadScroll = JScrollPane(self._payloadArea)
         payloadScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(payloadScroll, gbc)
+        bottomPanel.add(payloadScroll, gbc)
 
         # Result Hash label
         gbc.gridy  = 2; gbc.weighty = 0; gbc.fill = GridBagConstraints.HORIZONTAL
         gbc.insets = Insets(0, 0, 2, 0)
-        rightPanel.add(JLabel("Result Hash:"), gbc)
+        bottomPanel.add(JLabel("Result Hash:"), gbc)
 
         # Result Hash text area
         gbc.gridy  = 3; gbc.weighty = 0.2; gbc.fill = GridBagConstraints.BOTH
@@ -582,12 +554,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._outputArea.setEditable(False)
         outputScroll = JScrollPane(self._outputArea)
         outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(outputScroll, gbc)
+        bottomPanel.add(outputScroll, gbc)
 
         # Debug Output label
         gbc.gridy  = 4; gbc.weighty = 0; gbc.fill = GridBagConstraints.HORIZONTAL
         gbc.insets = Insets(0, 0, 2, 0)
-        rightPanel.add(JLabel("Debug Output:"), gbc)
+        bottomPanel.add(JLabel("Debug Output:"), gbc)
 
         # Debug text area
         gbc.gridy  = 5; gbc.weighty = 0.6; gbc.fill = GridBagConstraints.BOTH
@@ -600,13 +572,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._debugArea.setEditable(False)
         debugScroll = JScrollPane(self._debugArea)
         debugScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(debugScroll, gbc)
+        bottomPanel.add(debugScroll, gbc)
 
-        # Combine left + right
-        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
-        splitPane.setDividerLocation(320)
-        splitPane.setResizeWeight(0.0)
-        panel.add(splitPane, BorderLayout.CENTER)
+        panel.add(topPanel, BorderLayout.NORTH)
+        panel.add(bottomPanel, BorderLayout.CENTER)
 
         return panel
 
@@ -617,91 +586,72 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        monoFont  = Font("Monospaced", Font.PLAIN, 12)
-
-        # ---- Left config panel ----
-        leftPanel = JPanel(GridBagLayout())
-        leftPanel.setBorder(
+        # ---- Top config panel ----
+        topPanel = JPanel(GridBagLayout())
+        topPanel.setBorder(
             _roundedCompound(radius=8, padding=10)
         )
 
         cgbc = GridBagConstraints()
         cgbc.insets  = Insets(4, 4, 4, 4)
-        cgbc.anchor  = GridBagConstraints.NORTHWEST
-        cgbc.gridx   = 0
-        cgbc.weightx = 1.0
         cgbc.fill    = GridBagConstraints.HORIZONTAL
+        cgbc.weightx = 0.5
 
-        # Mode
-        cgbc.gridy = 0
-        lbl = JLabel("Mode:")
-        leftPanel.add(lbl, cgbc)
-
-        cgbc.gridy = 1
         self._cryptoModeCombo = JComboBox(["Encrypt", "Decrypt"])
-        leftPanel.add(self._cryptoModeCombo, cgbc)
-
-        # Algorithm (AES-CBC-128 only for now)
-        cgbc.gridy = 2
-        cgbc.insets = Insets(10, 4, 4, 4)
-        lbl = JLabel("Algorithm:")
-        leftPanel.add(lbl, cgbc)
-
-        cgbc.gridy = 3
-        cgbc.insets = Insets(4, 4, 4, 4)
+        
         crypto_names = self.crypto_snippet_manager.get_all_names()
         if not crypto_names:
             crypto_names = ["(no algorithms -- add via Crypto Editor)"]
         self._cryptoAlgoCombo = JComboBox(crypto_names)
-        # Update Key/IV fields when algorithm changes
         self._cryptoAlgoCombo.addActionListener(lambda e: self._updateCryptoFieldState())
-        leftPanel.add(self._cryptoAlgoCombo, cgbc)
-
-        # Key
-        cgbc.gridy = 4
-        cgbc.insets = Insets(10, 4, 4, 4)
-        leftPanel.add(JLabel("Key:"), cgbc)
-
-        cgbc.gridy = 5
-        cgbc.insets = Insets(4, 4, 4, 4)
+        
         self._cryptoKeyField = JTextField()
-        leftPanel.add(self._cryptoKeyField, cgbc)
-
-        # IV
-        cgbc.gridy = 6
-        cgbc.insets = Insets(10, 4, 4, 4)
-        leftPanel.add(JLabel("IV:"), cgbc)
-
-        cgbc.gridy = 7
-        cgbc.insets = Insets(4, 4, 4, 4)
         self._cryptoIvField = JTextField()
-        leftPanel.add(self._cryptoIvField, cgbc)
-
-        # Field
-        cgbc.gridy = 8
-        cgbc.insets = Insets(10, 4, 4, 4)
-        leftPanel.add(JLabel("Field:"), cgbc)
-
-        cgbc.gridy = 9
-        cgbc.insets = Insets(4, 4, 4, 4)
+        
         self._mainCryptoField = JTextField("data")
         self._mainCryptoField.setToolTipText("JSON key to read input from / write output to")
-        leftPanel.add(self._mainCryptoField, cgbc)
-
-        # Run button
-        cgbc.gridy = 10
-        cgbc.insets = Insets(20, 4, 4, 4)
+        
         self._cryptoRunBtn = JButton("Run Crypto", actionPerformed=self._onCryptoRun)
-        leftPanel.add(self._cryptoRunBtn, cgbc)
 
-        # Spacer
-        cgbc.gridy = 11
-        cgbc.weighty = 1.0
-        cgbc.insets  = Insets(0, 0, 0, 0)
-        leftPanel.add(JPanel(), cgbc)
+        # Row 0: Mode & Algorithm
+        cgbc.gridy = 0
+        cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Mode:"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 0.5; cgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._cryptoModeCombo, cgbc)
+        
+        cgbc.gridx = 2; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE; cgbc.insets = Insets(4, 16, 4, 4)
+        topPanel.add(JLabel("Algorithm:"), cgbc)
+        cgbc.gridx = 3; cgbc.weightx = 0.5; cgbc.fill = GridBagConstraints.HORIZONTAL; cgbc.insets = Insets(4, 4, 4, 4)
+        topPanel.add(self._cryptoAlgoCombo, cgbc)
 
-        # ---- Right: input + output text areas ----
-        rightPanel = JPanel(GridBagLayout())
+        # Row 1: Key & IV
+        cgbc.gridy = 1
+        cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Key:"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 0.5; cgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._cryptoKeyField, cgbc)
+        
+        cgbc.gridx = 2; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE; cgbc.insets = Insets(4, 16, 4, 4)
+        topPanel.add(JLabel("IV:"), cgbc)
+        cgbc.gridx = 3; cgbc.weightx = 0.5; cgbc.fill = GridBagConstraints.HORIZONTAL; cgbc.insets = Insets(4, 4, 4, 4)
+        topPanel.add(self._cryptoIvField, cgbc)
+
+        # Row 2: Field & Run Button
+        cgbc.gridy = 2
+        cgbc.gridx = 0; cgbc.weightx = 0; cgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Field:"), cgbc)
+        cgbc.gridx = 1; cgbc.weightx = 0.5; cgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._mainCryptoField, cgbc)
+        
+        cgbc.gridx = 2; cgbc.gridwidth = 2; cgbc.weightx = 1.0; cgbc.fill = GridBagConstraints.HORIZONTAL; cgbc.insets = Insets(4, 16, 4, 4)
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
+        btnPanel.add(self._cryptoRunBtn)
+        topPanel.add(btnPanel, cgbc)
+        cgbc.gridwidth = 1  # restore
+
+        # ---- Bottom: input + output text areas ----
+        bottomPanel = JPanel(GridBagLayout())
         rgbc = GridBagConstraints()
         rgbc.fill    = GridBagConstraints.BOTH
         rgbc.insets  = Insets(2, 0, 2, 0)
@@ -713,7 +663,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         rgbc.weighty = 0
         rgbc.fill   = GridBagConstraints.HORIZONTAL
         inputLbl    = JLabel("Input (plaintext for Encrypt, Base64 for Decrypt):")
-        rightPanel.add(inputLbl, rgbc)
+        bottomPanel.add(inputLbl, rgbc)
 
         # Input text area
         rgbc.gridy  = 1
@@ -724,14 +674,14 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._cryptoInputArea.setWrapStyleWord(True)
         inputScroll = JScrollPane(self._cryptoInputArea)
         inputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(inputScroll, rgbc)
+        bottomPanel.add(inputScroll, rgbc)
 
         # Output label
         rgbc.gridy  = 2
         rgbc.weighty = 0
         rgbc.fill   = GridBagConstraints.HORIZONTAL
         outputLbl   = JLabel("Output:")
-        rightPanel.add(outputLbl, rgbc)
+        bottomPanel.add(outputLbl, rgbc)
 
         # Output text area
         rgbc.gridy  = 3
@@ -744,13 +694,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._cryptoOutputArea.setWrapStyleWord(True)
         outputScroll = JScrollPane(self._cryptoOutputArea)
         outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(outputScroll, rgbc)
+        bottomPanel.add(outputScroll, rgbc)
 
-        # Combine left + right
-        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
-        splitPane.setDividerLocation(320)
-        splitPane.setResizeWeight(0.0)
-        panel.add(splitPane, BorderLayout.CENTER)
+        panel.add(topPanel, BorderLayout.NORTH)
+        panel.add(bottomPanel, BorderLayout.CENTER)
 
         return panel
 
@@ -1080,127 +1027,105 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         Reverse-engineer key concatenation order.
         Given a JSON / form-data body and a known concatenated string,
         find which permutation of the field values produces that string.
-
-        Layout:
-          LEFT  - Body Format, Request Body (large), Additional Values, Parse Body button
-          RIGHT - Parsed Fields, Known String, Find Key Order, Results
         """
         panel = JPanel(BorderLayout(10, 10))
         panel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        # ---- LEFT: Body Format, Request Body, Additional Values, Parse button ----
-        leftPanel = JPanel(GridBagLayout())
-        leftPanel.setBorder(_roundedCompound(radius=8, padding=10))
+        # ---- Top config panel ----
+        topPanel = JPanel(GridBagLayout())
+        topPanel.setBorder(_roundedCompound(radius=8, padding=10))
 
-        lgbc = GridBagConstraints()
-        lgbc.gridx = 0; lgbc.weightx = 1.0; lgbc.fill = GridBagConstraints.HORIZONTAL
-        lgbc.insets = Insets(4, 4, 4, 4)
+        tgbc = GridBagConstraints()
+        tgbc.insets = Insets(4, 5, 4, 5)
+        tgbc.fill = GridBagConstraints.HORIZONTAL
+        tgbc.weightx = 0.5
+        tgbc.gridy = 0
 
-        # Body format dropdown
-        lgbc.gridy = 0; lgbc.weighty = 0
-        fmtRow = JPanel(BorderLayout(0, 2))
-        fmtRow.add(JLabel("Body Format:"), BorderLayout.NORTH)
         self._kfFormatCombo = JComboBox(["Auto-Detect", "JSON", "Form Data", "Multipart"])
-        fmtRow.add(self._kfFormatCombo, BorderLayout.CENTER)
-        leftPanel.add(fmtRow, lgbc)
+        
+        self._kfAdditionalPanel = CompactCustomDataPanel()
+        self._kfAdditionalPanel._rows[0][0].setText("token")  # default key = token
+        self._kfAdditionalPanel.setToolTipText("Extra fields not in the request body, e.g. token: <value>")
+        
+        self._kfKnownArea = JTextField()
+        self._kfKnownArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        
+        # Row 0: Body Format & Extra Fields
+        tgbc.gridy = 0
+        tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE
+        topPanel.add(JLabel("Body Format:"), tgbc)
+        tgbc.gridx = 1; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._kfFormatCombo, tgbc)
+        
+        tgbc.gridx = 2; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE; tgbc.insets = Insets(4, 16, 4, 5)
+        topPanel.add(JLabel("Extra Fields:"), tgbc)
+        tgbc.gridx = 3; tgbc.weightx = 0.5; tgbc.fill = GridBagConstraints.HORIZONTAL; tgbc.insets = Insets(4, 5, 4, 5)
+        topPanel.add(self._kfAdditionalPanel, tgbc)
 
-        # Request body textarea (large)
-        lgbc.gridy = 1; lgbc.insets = Insets(8, 4, 2, 4)
-        leftPanel.add(JLabel("Request Body (paste here):"), lgbc)
+        # Row 1: Known String
+        tgbc.gridy = 1
+        tgbc.gridx = 0; tgbc.weightx = 0; tgbc.fill = GridBagConstraints.NONE; tgbc.insets = Insets(4, 5, 4, 5)
+        topPanel.add(JLabel("Known String:"), tgbc)
+        tgbc.gridx = 1; tgbc.gridwidth = 3; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
+        topPanel.add(self._kfKnownArea, tgbc)
+        tgbc.gridwidth = 1  # restore
 
-        lgbc.gridy = 2; lgbc.weighty = 1.0; lgbc.fill = GridBagConstraints.BOTH
-        lgbc.insets = Insets(2, 4, 8, 4)
-        self._kfBodyArea = JTextArea(12, 30)
+        # Row 2: Buttons
+        tgbc.gridy = 2
+        tgbc.gridx = 0; tgbc.gridwidth = 4; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
+        tgbc.insets = Insets(8, 5, 4, 5)
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        parseBtn = JButton("Parse Body", actionPerformed=self._onParseKeyFinderBody)
+        parseBtn.setToolTipText("Parse the request body and populate Parsed Fields below")
+        findBtn = JButton("Find Key Order", actionPerformed=self._onFindOrder)
+        self._kfApplyBtn = JButton("Apply to Hash Tab", actionPerformed=self._onApplyKfResult)
+        self._kfApplyBtn.setEnabled(False)
+        btnPanel.add(parseBtn)
+        btnPanel.add(findBtn)
+        btnPanel.add(self._kfApplyBtn)
+        topPanel.add(btnPanel, tgbc)
+
+        # ---- Bottom side: side-by-side equal columns ----
+        bottomPanel = JPanel(GridLayout(1, 3, 10, 0))
+
+        # Column 1: Request Body
+        bodyCol = JPanel(BorderLayout(0, 4))
+        bodyCol.add(JLabel("Request Body (paste here):"), BorderLayout.NORTH)
+        self._kfBodyArea = JTextArea(12, 20)
         self._kfBodyArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._kfBodyArea.setLineWrap(True)
         self._kfBodyArea.setWrapStyleWord(True)
         bodyScroll = JScrollPane(self._kfBodyArea)
         bodyScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        leftPanel.add(bodyScroll, lgbc)
+        bodyCol.add(bodyScroll, BorderLayout.CENTER)
+        bottomPanel.add(bodyCol)
 
-        # Additional values (N-06: CompactCustomDataPanel replaces free-text JTextArea)
-        lgbc.gridy = 3; lgbc.weighty = 0; lgbc.fill = GridBagConstraints.HORIZONTAL
-        lgbc.insets = Insets(0, 4, 2, 4)
-        leftPanel.add(JLabel("Extra Fields (key: value):"), lgbc)
-
-        lgbc.gridy = 4; lgbc.weighty = 0; lgbc.fill = GridBagConstraints.HORIZONTAL
-        lgbc.insets = Insets(2, 4, 8, 4)
-        self._kfAdditionalPanel = CompactCustomDataPanel()
-        self._kfAdditionalPanel._rows[0][0].setText("token")  # default key = token
-        self._kfAdditionalPanel.setToolTipText("Extra fields not in the request body, e.g. token: <value>")
-        leftPanel.add(self._kfAdditionalPanel, lgbc)
-
-        # Parse button
-        lgbc.gridy = 5; lgbc.weighty = 0; lgbc.fill = GridBagConstraints.HORIZONTAL
-        lgbc.insets = Insets(0, 4, 4, 4)
-        parseBtn = JButton("Parse Body", actionPerformed=self._onParseKeyFinderBody)
-        parseBtn.setToolTipText("Parse the request body and populate Parsed Fields on the right")
-        leftPanel.add(parseBtn, lgbc)
-
-        # ---- RIGHT: Parsed Fields, Known String, Find, Results ----
-        rightPanel = JPanel(GridBagLayout())
-        rgbc = GridBagConstraints()
-        rgbc.gridx = 0; rgbc.weightx = 1.0; rgbc.fill = GridBagConstraints.HORIZONTAL
-        rgbc.insets = Insets(0, 0, 2, 0)
-
-        # Parsed fields (editable)
-        rgbc.gridy = 0; rgbc.weighty = 0
-        rightPanel.add(JLabel("Parsed Fields (key: value):"), rgbc)
-
-        rgbc.gridy = 1; rgbc.weighty = 0.4; rgbc.fill = GridBagConstraints.BOTH
-        rgbc.insets = Insets(2, 0, 8, 0)
-        self._kfParsedArea = JTextArea(8, 28)
+        # Column 2: Parsed Fields
+        parsedCol = JPanel(BorderLayout(0, 4))
+        parsedCol.add(JLabel("Parsed Fields (key: value):"), BorderLayout.NORTH)
+        self._kfParsedArea = JTextArea(8, 20)
         self._kfParsedArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._kfParsedArea.setEditable(True)
         self._kfParsedArea.setLineWrap(True)
         self._kfParsedArea.setToolTipText("Auto-filled by Parse Body, or edit manually")
         parsedScroll = JScrollPane(self._kfParsedArea)
         parsedScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(parsedScroll, rgbc)
+        parsedCol.add(parsedScroll, BorderLayout.CENTER)
+        bottomPanel.add(parsedCol)
 
-        # Known concatenated string (bigger box)
-        rgbc.gridy = 2; rgbc.weighty = 0; rgbc.fill = GridBagConstraints.HORIZONTAL
-        rgbc.insets = Insets(0, 0, 2, 0)
-        rightPanel.add(JLabel("Known Concatenated String (the hash input):"), rgbc)
-
-        rgbc.gridy = 3; rgbc.weighty = 0.2; rgbc.fill = GridBagConstraints.BOTH
-        rgbc.insets = Insets(2, 0, 8, 0)
-        self._kfKnownArea = JTextArea(5, 28)
-        self._kfKnownArea.setFont(Font("Monospaced", Font.PLAIN, 12))
-        self._kfKnownArea.setLineWrap(True)
-        self._kfKnownArea.setWrapStyleWord(True)
-        knownScroll = JScrollPane(self._kfKnownArea)
-        knownScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(knownScroll, rgbc)
-
-        # Find & Apply buttons row
-        rgbc.gridy = 4; rgbc.weighty = 0; rgbc.fill = GridBagConstraints.HORIZONTAL
-        rgbc.insets = Insets(0, 0, 8, 0)
-        btnPanel = JPanel(GridLayout(1, 2, 4, 0))
-        findBtn = JButton("Find Key Order", actionPerformed=self._onFindOrder)
-        self._kfApplyBtn = JButton("Apply to Hash Tab", actionPerformed=self._onApplyKfResult)
-        self._kfApplyBtn.setEnabled(False)
-        btnPanel.add(findBtn)
-        btnPanel.add(self._kfApplyBtn)
-        rightPanel.add(btnPanel, rgbc)
-
-        # Results
-        rgbc.gridy = 5; rgbc.insets = Insets(0, 0, 2, 0)
-        rightPanel.add(JLabel("Results:"), rgbc)
-
-        rgbc.gridy = 6; rgbc.weighty = 0.4; rgbc.fill = GridBagConstraints.BOTH
-        rgbc.insets = Insets(2, 0, 0, 0)
+        # Column 3: Results
+        resultCol = JPanel(BorderLayout(0, 4))
+        resultCol.add(JLabel("Results:"), BorderLayout.NORTH)
         self._kfResultArea = _WrapPane()
         self._kfResultArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._kfResultArea.setEditable(False)
         resultScroll = JScrollPane(self._kfResultArea)
         resultScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(resultScroll, rgbc)
+        resultCol.add(resultScroll, BorderLayout.CENTER)
+        bottomPanel.add(resultCol)
 
-        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
-        splitPane.setDividerLocation(420)
-        splitPane.setResizeWeight(0.45)
-        panel.add(splitPane, BorderLayout.CENTER)
+        panel.add(topPanel, BorderLayout.NORTH)
+        panel.add(bottomPanel, BorderLayout.CENTER)
         return panel
 
     def _onParseKeyFinderBody(self, event=None):
