@@ -19,7 +19,7 @@ from javax.swing import Timer as _SwingTimer
 
 from burp import IMessageEditorTab
 from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE, _MAX_KF_FIELDS, _extract_request_path
-from core.body_parser import parse_body, serialize_body
+from core.body_parser import parse_body, serialize_body, flatten_data
 from core.snippet_manager import SnippetManager
 from core.crypto_engine import CryptoEngine, AesCbcEngine
 from core.crypto_snippet_manager import CryptoSnippetManager
@@ -203,7 +203,7 @@ class HashGenEditorTab(IMessageEditorTab):
         kgbc.gridy = 0; kgbc.gridx = 0; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
         kfPanel.add(JLabel("Body Format:"), kgbc)
         kgbc.gridx = 1; kgbc.weightx = 1.0; kgbc.fill = GridBagConstraints.HORIZONTAL
-        self._inlineKfFormatCombo = JComboBox(["JSON", "Form Data"])
+        self._inlineKfFormatCombo = JComboBox(["Auto-Detect", "JSON", "Form Data", "Multipart"])
         kfPanel.add(self._inlineKfFormatCombo, kgbc)
         kgbc.gridx = 2; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
         inlineParseBtn = JButton("Parse Body", actionPerformed=self._onInlineKfParse)
@@ -611,7 +611,21 @@ class HashGenEditorTab(IMessageEditorTab):
         if ep and "custom_data" in ep:
             custom_data = ep["custom_data"]
         if custom_data is not None:
-            self._customDataPanel.setPairs(custom_data)
+            # Merge incoming custom_data with current UI pairs to avoid overwriting non-empty user input with empty/null settings
+            current_pairs = self._customDataPanel.getPairs()
+            merged_data = {}
+            for k, v in custom_data.items():
+                current_val = current_pairs.get(k, "")
+                try:
+                    is_str = isinstance(v, (str, unicode))
+                except NameError:
+                    is_str = isinstance(v, str)
+                incoming_empty = (v is None) or (is_str and not v.strip()) or (str(v) == "")
+                if current_val.strip() and incoming_empty:
+                    merged_data[k] = current_val
+                else:
+                    merged_data[k] = v
+            self._customDataPanel.setPairs(merged_data)
         if "hash_field" in app:
             self._hashFieldName.setText(app["hash_field"])
         c = app.get("crypto", {})
@@ -660,19 +674,17 @@ class HashGenEditorTab(IMessageEditorTab):
         body = self._bodyArea.getText().strip()
         fmt  = str(self._inlineKfFormatCombo.getSelectedItem())
         try:
-            pairs = OrderedDict()
             if fmt == "JSON":
-                data = json.loads(body)
-                if not isinstance(data, dict):
-                    self._inlineKfParsedArea.setText("(JSON is not an object)")
-                    return
-                for k, v in data.items():
-                    pairs[str(k)] = str(v)
+                ct = "application/json"
+            elif fmt == "Form Data":
+                ct = "application/x-www-form-urlencoded"
+            elif fmt == "Multipart":
+                ct = "multipart/form-data"
             else:
-                for part in body.split("&"):
-                    if "=" in part:
-                        k, _, v = part.partition("=")
-                        pairs[k.strip()] = v.strip()
+                ct = ""  # Auto-Detect
+            
+            data = parse_body(body, ct)
+            pairs = flatten_data(data)
             if not pairs:
                 self._inlineKfParsedArea.setText("(no fields found)")
                 return

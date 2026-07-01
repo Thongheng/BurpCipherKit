@@ -228,6 +228,54 @@ def serialize_body(updated_data, original_body, content_type=""):
         return original_body
 
 
+def flatten_data(data):
+    """Recursively flatten dictionary and list values into a flat list of (key, value) pairs,
+    matching the original JSON keys without generating extra formats or date components."""
+    from collections import OrderedDict
+    pairs = OrderedDict()
+    
+    def process(prefix, val):
+        if val is None:
+            return
+            
+        if isinstance(val, dict):
+            for k, v in val.items():
+                full_key = "%s.%s" % (prefix, k) if prefix else k
+                process(full_key, v)
+            return
+            
+        if isinstance(val, (list, tuple)):
+            # Convert list of primitives to a joined string
+            try:
+                if all(not isinstance(x, (dict, list, tuple)) for x in val):
+                    flat_str = "".join(str(x) for x in val)
+                    if prefix:
+                        pairs[prefix] = flat_str
+                    else:
+                        pairs["list_join"] = flat_str
+                else:
+                    # If it contains nested dicts/lists, process them
+                    for i, item in enumerate(val):
+                        idx_key = "%s[%d]" % (prefix, i) if prefix else "%d" % i
+                        process(idx_key, item)
+            except:
+                pass
+            return
+            
+        # Primitive value
+        val_str = str(val)
+        if prefix:
+            pairs[prefix] = val_str
+                    
+    # Start recursion
+    if isinstance(data, dict):
+        for k, v in data.items():
+            process(k, v)
+            
+    return pairs
+
+
+
 
 # =============================================================================
 # Core Logic: Crypto Engine

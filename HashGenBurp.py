@@ -32,7 +32,7 @@ if _here not in sys.path:
 from core.snippet_manager import SnippetManager
 from core.crypto_snippet_manager import CryptoSnippetManager
 from core.app_setting_manager import AppSettingManager
-from core.body_parser import parse_body, serialize_body
+from core.body_parser import parse_body, serialize_body, flatten_data
 from core.crypto_engine import CryptoEngine
 from core.crypto_snippet_engine import CryptoSnippetEngine
 from core.utils import _MAX_KF_FIELDS, _extract_request_path
@@ -1134,7 +1134,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.gridy = 0; lgbc.weighty = 0
         fmtRow = JPanel(BorderLayout(0, 2))
         fmtRow.add(JLabel("Body Format:"), BorderLayout.NORTH)
-        self._kfFormatCombo = JComboBox(["JSON", "Form Data"])
+        self._kfFormatCombo = JComboBox(["Auto-Detect", "JSON", "Form Data", "Multipart"])
         fmtRow.add(self._kfFormatCombo, BorderLayout.CENTER)
         leftPanel.add(fmtRow, lgbc)
 
@@ -1248,21 +1248,18 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._kfParsedArea.setText("Parse error: %s" % str(e))
 
     def _kfParseBody(self, body, fmt):
-        """Return OrderedDict-like list of (key, value) from JSON or form data."""
-        from collections import OrderedDict
-        pairs = OrderedDict()
+        """Return OrderedDict-like list of (key, value) from JSON, form data or multipart."""
         if fmt == "JSON":
-            data = json.loads(body)
-            if not isinstance(data, dict):
-                raise ValueError("JSON is not an object")
-            for k, v in data.items():
-                pairs[str(k)] = str(v)
-        else:  # Form Data
-            for part in body.split("&"):
-                if "=" in part:
-                    k, _, v = part.partition("=")
-                    pairs[k.strip()] = v.strip()
-        return pairs
+            ct = "application/json"
+        elif fmt == "Form Data":
+            ct = "application/x-www-form-urlencoded"
+        elif fmt == "Multipart":
+            ct = "multipart/form-data"
+        else:
+            ct = ""  # Auto-Detect
+        
+        data = parse_body(body, ct)
+        return flatten_data(data)
 
     def _kfReadParsedFields(self):
         """Read the manually-editable Parsed Fields and Additional Values areas back into an OrderedDict."""
