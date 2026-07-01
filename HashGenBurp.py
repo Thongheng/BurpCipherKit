@@ -11,14 +11,20 @@ from burp import (
 )
 
 from javax.swing import (
-    JPanel, JLabel, JTextField, JTextArea, JButton, JComboBox, JCheckBox,
+    JPanel, JLabel, JTextField, JTextArea, JTextPane, JButton, JComboBox, JCheckBox,
     JScrollPane, JTabbedPane, JSplitPane, JOptionPane, SwingUtilities,
-    BoxLayout, Box
+    BoxLayout, Box, BorderFactory
 )
 from javax.swing.border import EmptyBorder, AbstractBorder
+
+class _WrapPane(JTextPane):
+    """JTextPane that wraps text to the viewport width."""
+    def getScrollableTracksViewportWidth(self):
+        return True
+
 from java.awt import (
     BorderLayout, GridBagLayout, GridBagConstraints, Insets,
-    Font, Color, Dimension, FlowLayout, Component
+    Font, Color, Dimension, FlowLayout, Component, GridLayout
 )
 from java.awt.event import FocusAdapter
 
@@ -91,6 +97,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self.snippet_manager        = SnippetManager(snippets_path)
         self.crypto_snippet_manager = CryptoSnippetManager(crypto_snippets_path)
         self.app_setting_manager    = AppSettingManager(app_settings_path)
+        self.settings_path = os.path.join(script_dir, "ext_settings.json")
+        self.ext_settings = self._load_settings()
+        self._lastKfMatches = []
+        self._editor_tabs = []  # track active editor tabs
 
         # Build main tab UI synchronously
         SwingUtilities.invokeAndWait(self._buildUI)
@@ -211,7 +221,13 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # -------------------------------------------------------------------------
     def createNewInstance(self, controller, editable):
         try:
-            return HashGenEditorTab(self, controller, editable)
+            tab = HashGenEditorTab(self, controller, editable)
+            self._editor_tabs.append(tab)
+            try:
+                tab.update_tab_visibility()
+            except Exception:
+                pass
+            return tab
         except Exception as e:
             print("[CipherKit] ERROR creating inline tab: %s" % e)
             print(traceback.format_exc())
@@ -278,28 +294,19 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
 
 
         # Tabbed pane for Generator / Crypto / Editor
-        self._tabbedPane = JTabbedPane()
-        self._mainPanel.add(self._tabbedPane, BorderLayout.CENTER)
+        self._generatorPanel = self._buildGeneratorTab()
+        self._cryptoPanel    = self._buildCryptoTab()
+        self._keyFinderPanel = self._buildKeyFinderTab()
+        self._settingPanel   = self._buildSettingTab()
 
-        generatorPanel = self._buildGeneratorTab()
-        cryptoPanel        = self._buildCryptoTab()
-        editorPanel        = self._buildEditorTab()
-        cryptoEditorPanel  = self._buildCryptoEditorTab()
-        keyFinderPanel     = self._buildKeyFinderTab()
-
-        settingPanel = self._buildSettingTab()
-        timestampPanel = self._buildTimestampTab()
-
-        self._tabbedPane.addTab("Hash", generatorPanel)
-        self._tabbedPane.addTab("Crypto", cryptoPanel)
-        self._tabbedPane.addTab("Key Finder", keyFinderPanel)
-        self._tabbedPane.addTab("Hash Editor", editorPanel)
-        self._tabbedPane.addTab("Crypto Editor", cryptoEditorPanel)
-        self._tabbedPane.addTab("AppSetting", settingPanel)
-        self._tabbedPane.addTab("Timestamp", timestampPanel)
+        self.update_tab_visibility()
 
         # Global session-level settings bar (persists until Burp is restarted)
         globalBar = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
+        
+        globalTsBtn = JButton("Get Timestamp", actionPerformed=self._onGetTimestampGlobal)
+        globalBar.add(globalTsBtn)
+
         # Active output mode: controls what the Hash tab's output shows
         globalBar.add(JLabel("Hash tab output:"))
         self._activeOutputCombo = JComboBox(["Hash", "Crypto"])
@@ -329,149 +336,87 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # AppSetting Tab (main CipherKit)
     # -------------------------------------------------------------------------
     def _buildSettingTab(self):
-        mainPanel = JPanel(BorderLayout(0, 8))
-        mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
-
-        # Top: App selector row
+        # 1. Left Panel (App Settings Loader)
+        appPanel = JPanel(BorderLayout(0, 8))
+        appPanel.setBorder(EmptyBorder(0, 0, 0, 5))
+        
         topRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
         topRow.add(JLabel("App Setting:"))
-        
-        # Build combo box with current app names
         names = ["(none)"] + self.app_setting_manager.get_all_names()
         self._settingCombo = JComboBox(names)
         self._settingCombo.setPreferredSize(Dimension(200, 26))
-        self._settingCombo.setToolTipText("Select an existing app setting to view or load")
         self._settingCombo.addActionListener(lambda e: self._onSettingComboChange())
         topRow.add(self._settingCombo)
-
-        _loadBtn = JButton("Load Config", actionPerformed=self._onSettingSelected)
-        _loadBtn.setToolTipText("Load the selected app setting into the Hash and Crypto tabs")
-        topRow.add(_loadBtn)
         
-        mainPanel.add(topRow, BorderLayout.NORTH)
-
-        # Center: formatted summary area
+        _loadBtn = JButton("Load Config", actionPerformed=self._onSettingSelected)
+        topRow.add(_loadBtn)
+        appPanel.add(topRow, BorderLayout.NORTH)
+        
         self._settingSummaryArea = JTextArea()
         self._settingSummaryArea.setEditable(False)
         self._settingSummaryArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._settingSummaryArea.setBorder(EmptyBorder(5, 5, 5, 5))
+        appPanel.add(JScrollPane(self._settingSummaryArea), BorderLayout.CENTER)
         
-        mainPanel.add(JScrollPane(self._settingSummaryArea), BorderLayout.CENTER)
-        
-        # Bottom: actions panel
         actRow = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         self._saveNewSettingBtn = JButton("Save New", actionPerformed=self._onSaveNewSetting)
         self._updateSettingBtn  = JButton("Update Existing", actionPerformed=self._onUpdateSetting)
-        self._deleteSettingBtn  = JButton("Delete", actionPerformed=self._onDeleteSetting)
-        
-        self._saveNewSettingBtn.setToolTipText("Save current UI config as a new app setting")
-        self._updateSettingBtn.setToolTipText("Overwrite the selected app setting with current UI config")
-        
+        self._deleteSettingBtn  = JButton("Delete App", actionPerformed=self._onDeleteSetting)
         actRow.add(self._saveNewSettingBtn)
         actRow.add(self._updateSettingBtn)
         actRow.add(self._deleteSettingBtn)
+        appPanel.add(actRow, BorderLayout.SOUTH)
+
+        # 2. Right Panel (Extension Settings Options)
+        extPanel = JPanel(GridBagLayout())
+        extPanel.setBorder(BorderFactory.createTitledBorder("Extension Options"))
+        egbc = GridBagConstraints()
+        egbc.insets = Insets(4, 6, 4, 6)
+        egbc.anchor = GridBagConstraints.WEST
+        egbc.fill = GridBagConstraints.HORIZONTAL
+        egbc.weightx = 1.0
+
+        # Checkboxes for Tab Visibilities
+        egbc.gridy = 0; egbc.gridx = 0
+        self._optShowCrypto = JCheckBox("Enable Crypto Tab", self.ext_settings.get("show_crypto", True))
+        extPanel.add(self._optShowCrypto, egbc)
+
+        egbc.gridy = 1; egbc.gridx = 0
+        self._optShowKf = JCheckBox("Enable Key Finder Tab", self.ext_settings.get("show_key_finder", True))
+        extPanel.add(self._optShowKf, egbc)
+
+        egbc.gridy = 2; egbc.gridx = 0
+        self._optShowAs = JCheckBox("Enable AppSetting Tab", self.ext_settings.get("show_app_setting", True))
+        extPanel.add(self._optShowAs, egbc)
+
+        # Token length configuration
+        egbc.gridy = 3; egbc.gridx = 0
+        tokenRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        tokenRow.add(JLabel("Default Token Length (for auto-detect):"))
+        self._optTokenLen = JTextField(str(self.ext_settings.get("default_token_length", 64)), 6)
+        tokenRow.add(self._optTokenLen)
+        extPanel.add(tokenRow, egbc)
+
+        # Save button
+        egbc.gridy = 4; egbc.gridx = 0; egbc.insets = Insets(10, 6, 4, 6)
+        saveOptBtn = JButton("Save Options", actionPerformed=self._onSaveExtensionSettings)
+        extPanel.add(saveOptBtn, egbc)
         
-        mainPanel.add(actRow, BorderLayout.SOUTH)
+        # Filler panel to push checkboxes to top
+        egbc.gridy = 5; egbc.weighty = 1.0; egbc.fill = GridBagConstraints.BOTH
+        extPanel.add(JPanel(), egbc)
+
+        # 3. Combine in Split Pane
+        settingSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, appPanel, extPanel)
+        settingSplit.setResizeWeight(0.5)
+        
+        mainPanel = JPanel(BorderLayout())
+        mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
+        mainPanel.add(settingSplit, BorderLayout.CENTER)
         
         return mainPanel
 
-    def _buildTimestampTab(self):
-        panel = JPanel(BorderLayout(10, 10))
-        panel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-        # ---- Left: Config panel (styled just like other tabs' left side) ----
-        leftPanel = JPanel(GridBagLayout())
-        leftPanel.setBorder(
-            _roundedCompound(radius=8, padding=10)
-        )
-
-        lgbc = GridBagConstraints()
-        lgbc.insets  = Insets(3, 4, 3, 4)
-        lgbc.anchor  = GridBagConstraints.NORTHWEST
-        lgbc.gridx   = 0
-        lgbc.weightx = 1.0
-        lgbc.fill    = GridBagConstraints.HORIZONTAL
-
-        # Section Label
-        lgbc.gridy = 0
-        lbl = JLabel("Timestamp Options:")
-        leftPanel.add(lbl, lgbc)
-
-        # Checkbox: Auto-copy
-        lgbc.gridy = 1
-        lgbc.insets = Insets(10, 4, 3, 4)
-        self._tsAutoCopyChk = JCheckBox("Auto-copy to clipboard", True)
-        leftPanel.add(self._tsAutoCopyChk, lgbc)
-
-        # Button: Get Timestamp
-        lgbc.gridy = 2
-        lgbc.insets = Insets(20, 4, 4, 4)
-        tsBtn = JButton("Get Timestamp")
-        leftPanel.add(tsBtn, lgbc)
-
-        # Button: Copy to Clipboard
-        lgbc.gridy = 3
-        lgbc.insets = Insets(10, 4, 4, 4)
-        copyBtn = JButton("Copy to Clipboard")
-        leftPanel.add(copyBtn, lgbc)
-
-        # Spacer to push items to the top
-        lgbc.gridy = 4
-        lgbc.weighty = 1.0
-        lgbc.insets = Insets(0, 0, 0, 0)
-        leftPanel.add(JPanel(), lgbc)
-
-        # ---- Right: Text areas with label (matching Hash/Crypto tabs' right side) ----
-        rightPanel = JPanel(GridBagLayout())
-        rgbc = GridBagConstraints()
-        rgbc.gridx   = 0
-        rgbc.weightx = 1.0
-        rgbc.fill    = GridBagConstraints.HORIZONTAL
-        rgbc.insets  = Insets(0, 0, 2, 0)
-
-        # Output label
-        rgbc.gridy  = 0; rgbc.weighty = 0
-        rightPanel.add(JLabel("Timestamp Output:"), rgbc)
-
-        # Output scroll pane
-        rgbc.gridy  = 1; rgbc.weighty = 1.0; rgbc.fill = GridBagConstraints.BOTH
-        tsOutputArea = JTextArea(3, 40)
-        tsOutputArea.setFont(Font("Monospaced", Font.PLAIN, 12))
-        tsOutputArea.setLineWrap(True)
-        tsOutputArea.setWrapStyleWord(True)
-        tsOutputArea.setEditable(False)
-        outputScroll = JScrollPane(tsOutputArea)
-        outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
-        rightPanel.add(outputScroll, rgbc)
-
-        # Combine left + right with same divider settings as other tabs
-        splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
-        splitPane.setDividerLocation(320)
-        splitPane.setResizeWeight(0.0)
-        panel.add(splitPane, BorderLayout.CENTER)
-
-        # Action handlers
-        def _onGetTimestamp(event):
-            import time
-            ms = int(time.time() * 1000)
-            val = str(ms)
-            tsOutputArea.setText(val)
-            if self._tsAutoCopyChk.isSelected():
-                from java.awt.datatransfer import StringSelection
-                from java.awt import Toolkit
-                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(val), None)
-
-        def _onCopyTimestamp(event):
-            txt = tsOutputArea.getText().strip()
-            if txt:
-                from java.awt.datatransfer import StringSelection
-                from java.awt import Toolkit
-                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(txt), None)
-
-        tsBtn.addActionListener(_onGetTimestamp)
-        copyBtn.addActionListener(_onCopyTimestamp)
-
-        return panel
 
     def _buildGeneratorTab(self):
         panel = JPanel(BorderLayout(10, 10))
@@ -1103,6 +1048,27 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         panel.add(centerPanel, BorderLayout.CENTER)
         return panel
 
+    def _setKfResultStyled(self, text):
+        """Write text to the KF result JTextPane. Key order result lines are shown
+        in JSON-key blue without the 'Key order :' prefix."""
+        from javax.swing.text import SimpleAttributeSet, StyleConstants
+        doc = self._kfResultArea.getStyledDocument()
+        doc.remove(0, doc.getLength())
+        normal = SimpleAttributeSet()
+        StyleConstants.setFontFamily(normal, "Monospaced")
+        StyleConstants.setFontSize(normal, 12)
+        StyleConstants.setForeground(normal, Color(30, 30, 30))
+        highlight = SimpleAttributeSet()
+        StyleConstants.setFontFamily(highlight, "Monospaced")
+        StyleConstants.setFontSize(highlight, 12)
+        StyleConstants.setForeground(highlight, Color(0, 85, 170))
+        for line in text.splitlines():
+            if line.startswith("Key order :"):
+                display = line[len("Key order :"):].strip()
+                doc.insertString(doc.getLength(), display + "\n", highlight)
+            else:
+                doc.insertString(doc.getLength(), line + "\n", normal)
+
     # -------------------------------------------------------------------------
     # Snippet Editor Tab
     # -------------------------------------------------------------------------
@@ -1160,7 +1126,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         lgbc.gridy = 4; lgbc.weighty = 0; lgbc.fill = GridBagConstraints.HORIZONTAL
         lgbc.insets = Insets(2, 4, 8, 4)
         self._kfAdditionalPanel = CompactCustomDataPanel()
-        self._kfAdditionalPanel.setToolTipText("Extra fields not in the request body, e.g. API: A2345@#$...")
+        self._kfAdditionalPanel._rows[0][0].setText("token")  # default key = token
+        self._kfAdditionalPanel.setToolTipText("Extra fields not in the request body, e.g. token: <value>")
         leftPanel.add(self._kfAdditionalPanel, lgbc)
 
         # Parse button
@@ -1206,11 +1173,16 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         knownScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         rightPanel.add(knownScroll, rgbc)
 
-        # Find button
+        # Find & Apply buttons row
         rgbc.gridy = 4; rgbc.weighty = 0; rgbc.fill = GridBagConstraints.HORIZONTAL
         rgbc.insets = Insets(0, 0, 8, 0)
+        btnPanel = JPanel(GridLayout(1, 2, 4, 0))
         findBtn = JButton("Find Key Order", actionPerformed=self._onFindOrder)
-        rightPanel.add(findBtn, rgbc)
+        self._kfApplyBtn = JButton("Apply to Hash Tab", actionPerformed=self._onApplyKfResult)
+        self._kfApplyBtn.setEnabled(False)
+        btnPanel.add(findBtn)
+        btnPanel.add(self._kfApplyBtn)
+        rightPanel.add(btnPanel, rgbc)
 
         # Results
         rgbc.gridy = 5; rgbc.insets = Insets(0, 0, 2, 0)
@@ -1218,11 +1190,9 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
 
         rgbc.gridy = 6; rgbc.weighty = 0.4; rgbc.fill = GridBagConstraints.BOTH
         rgbc.insets = Insets(2, 0, 0, 0)
-        self._kfResultArea = JTextArea(8, 40)
+        self._kfResultArea = _WrapPane()
         self._kfResultArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._kfResultArea.setEditable(False)
-        self._kfResultArea.setLineWrap(True)
-        self._kfResultArea.setWrapStyleWord(True)
         resultScroll = JScrollPane(self._kfResultArea)
         resultScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         rightPanel.add(resultScroll, rgbc)
@@ -1285,18 +1255,35 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         """
         Bug-2 fix: brute-force runs in a background thread to avoid freezing Burp.
         UI updates are dispatched via SwingUtilities.invokeLater.
+        Auto-detect: if extra fields are empty and known string > 64 chars,
+        the last 64 chars are treated as the extra field (e.g. token).
         """
         known = str(self._kfKnownArea.getText().strip())
         sep   = ""
 
         if not known:
-            self._kfResultArea.setText("Please enter the known concatenated string.")
+            self._setKfResultStyled("Please enter the known concatenated string.")
             return
 
         pairs = self._kfReadParsedFields()
         if not pairs:
-            self._kfResultArea.setText("No fields found. Paste a body and click Parse Body first.")
+            self._setKfResultStyled("No fields found. Paste a body and click Parse Body first.")
             return
+
+        # ---- Auto-detect trailing 64-char extra field ----
+        _TOKEN_LEN = 64
+        _auto_detect_note = ""
+        if self._kfAdditionalPanel._rows:
+            first_key = self._kfAdditionalPanel._rows[0][0].getText().strip()
+            first_val = self._kfAdditionalPanel._rows[0][1].getText().strip()
+            # Only auto-detect if the first row (token) has a key but NO value
+            if first_key and not first_val and len(known) > _TOKEN_LEN:
+                token_val = known[-_TOKEN_LEN:]
+                pairs[first_key] = token_val
+                _auto_detect_note = "[Auto-detect] %s : %s" % (first_key, token_val)
+                # Populate the auto-detected token back to the UI row
+                self._kfAdditionalPanel._rows[0][1].setText(token_val)
+
 
         self._kfResultArea.setText("Searching... (running in background)")
 
@@ -1304,6 +1291,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         _pairs_snap = dict(pairs)
         _known_snap = known
         _sep_snap   = sep
+        _note_snap  = _auto_detect_note
 
         import threading as _threading
 
@@ -1332,40 +1320,99 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             dfs((), keys, _known_snap)
 
             lines = []
-            lines.append("Known string : '%s'" % _known_snap)
-            lines.append("Fields tried : %s" % ", ".join(keys))
-            lines.append("States visited: %d" % total_visited[0])
-            lines.append("-" * 50)
+            if _note_snap:
+                lines.append(_note_snap)
+                lines.append(u"\u2500" * 52)
 
             if not matches:
-                lines.append("No match found.")
-                lines.append("")
-                lines.append("Tip: check if the separator or values are correct.")
-                lines.append("Values used:")
-                for k, v in values.items():
-                    lines.append("  %s = '%s'" % (k, str(v)))
+                lines += ["No match found.", ""]
+                # Show which field values appear in the known string
+                found_keys = [(k, v) for k, v in _pairs_snap.items() if v and str(v) in _known_snap]
+                if found_keys:
+                    lines.append("Values found in known string:")
+                    for k, v in found_keys:
+                        lines.append("  %s : %s" % (k, v))
+                    lines.append("")
+                # Find segments in the known string not covered by any field value
+                remaining = _known_snap
+                for _, v in found_keys:
+                    remaining = remaining.replace(str(v), "\x00", 1)
+                unknown_parts = [p for p in remaining.split("\x00") if p]
+                if unknown_parts:
+                    lines.append("Unknown segment(s) not from any field:")
+                    for part in unknown_parts:
+                        lines.append("  %s" % part)
             else:
-                lines.append("%d match(es) found:" % len(matches))
-                lines.append("")
                 for i, perm in enumerate(matches, 1):
-                    key_order_str = ", ".join(perm)
-                    concat_show   = _sep_snap.join(str(values[k]) for k in perm)
-                    lines.append("Match #%d:" % i)
-                    lines.append("  Key order  : %s" % key_order_str)
-                    lines.append("  Concat     : '%s'" % concat_show)
-                    lines.append("")
+                    if len(matches) > 1:
+                        lines.append("Match #%d:" % i)
+                    lines.append("Key order : %s" % ", ".join(perm))
+                    if i < len(matches):
+                        lines.append("")
                 if len(matches) >= 100 or total_visited[0] >= 10000:
-                    lines.append("(Note: search was capped at 100 matches to optimize performance)")
                     lines.append("")
-                lines.append("Copy the key order above into the Hash tab's 'Keys Order' field.")
+                    lines.append("(Note: search was capped at 100 matches to optimize performance)")
 
             result_text = "\n".join(lines)
-            SwingUtilities.invokeLater(lambda: _outer._kfResultArea.setText(result_text))
+            def _update_ui():
+                _outer._setKfResultStyled(result_text)
+                _outer._lastKfMatches = matches
+                _outer._kfApplyBtn.setEnabled(bool(matches))
+            SwingUtilities.invokeLater(_update_ui)
 
         t = _threading.Thread(target=_run)
         t.setDaemon(True)
         t.start()
 
+    def _onApplyKfResult(self, event=None):
+        """Apply the chosen Key Finder result to the main Hash tab's fields."""
+        if not self._lastKfMatches:
+            JOptionPane.showMessageDialog(self._panel, "No matches to apply. Please run Find Key Order first.", "Apply Result", JOptionPane.WARNING_MESSAGE)
+            return
+
+        selected_match = None
+        if len(self._lastKfMatches) == 1:
+            selected_match = self._lastKfMatches[0]
+        else:
+            options = [", ".join(m) for m in self._lastKfMatches]
+            selected = JOptionPane.showInputDialog(
+                self._panel,
+                "Multiple matches found. Select which key order to apply:",
+                "Select Key Order",
+                JOptionPane.QUESTION_MESSAGE,
+                None,
+                options,
+                options[0]
+            )
+            if selected:
+                try:
+                    idx = options.index(selected)
+                    selected_match = self._lastKfMatches[idx]
+                except ValueError:
+                    pass
+
+        if selected_match:
+            # 1. Update Sign Order field
+            self._keysOrderField.setText(", ".join(selected_match))
+            
+            # 2. Merge Key Finder extra fields into Hash tab's custom data panel
+            hash_pairs = self._customDataPanel.getPairs()
+            kf_pairs = self._kfAdditionalPanel.getPairs()
+            for k, v in kf_pairs.items():
+                if k:
+                    # ONLY add if the key exists in the selected key order result
+                    if k in selected_match:
+                        hash_pairs[k] = v
+            self._customDataPanel.setPairs(hash_pairs)
+            
+            # 3. Switch view/focus to the Hash tab (index 0)
+            self._tabbedPane.setSelectedIndex(0)
+            
+            # 4. Trigger rehash immediately with the newly applied fields
+            try:
+                self._onGenerate()
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # Snippet Editor Tab
@@ -1530,6 +1577,27 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._outputArea.setText("Error: %s" % str(e))
             self._debugArea.setText(traceback.format_exc())
 
+    def _onGetTimestampGlobal(self, event=None):
+        import time
+        ms = int(time.time() * 1000)
+        val = str(ms)
+        from java.awt.datatransfer import StringSelection
+        from java.awt import Toolkit
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(StringSelection(val), None)
+        # Flash the button to give visual feedback
+        btn = event.getSource() if event else None
+        if btn:
+            original_text = btn.getText()
+            btn.setText(u"\u2713 Copied!")
+            btn.setEnabled(False)
+            from javax.swing import Timer as SwingTimer
+            def _restore(e):
+                btn.setText(original_text)
+                btn.setEnabled(True)
+            t = SwingTimer(1500, _restore)
+            t.setRepeats(False)
+            t.start()
+
     def _tryExtractKeys(self):
         """Auto-extract keys from payload using the selected body format."""
         try:
@@ -1689,77 +1757,73 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._updateCryptoFieldState()
 
     # -------------------------------------------------------------------------
-    # Actions: Crypto Editor
+    # Actions: Settings Option Toggle & Tab Visibility
     # -------------------------------------------------------------------------
-    def _onSaveCryptoSnippet(self, event=None):
-        name = self._cryptoSnippetNameField.getText().strip()
-        enc  = self._cryptoEncArea.getText().strip()
-        dec  = self._cryptoDecArea.getText().strip()
-        if not name:
-            JOptionPane.showMessageDialog(
-                self._mainPanel, "Please enter an algorithm name.",
-                "CipherKit - Save Error", JOptionPane.WARNING_MESSAGE
-            )
-            return
-        # Improvement-6: syntax-check both functions before saving
-        for label, src in (("encrypt", enc), ("decrypt", dec)):
+    def _load_settings(self):
+        try:
+            if os.path.exists(self.settings_path):
+                with open(self.settings_path, "r") as f:
+                    return json.load(f)
+        except Exception as e:
+            print("[CipherKit] Error loading settings: %s" % str(e))
+        return {
+            "show_crypto": True,
+            "show_key_finder": True,
+            "show_app_setting": True,
+            "default_token_length": 64
+        }
+
+    def _save_settings(self):
+        try:
+            with open(self.settings_path, "w") as f:
+                json.dump(self.ext_settings, f, indent=2)
+        except Exception as e:
+            print("[CipherKit] Error saving settings: %s" % str(e))
+
+    def _onSaveExtensionSettings(self, event=None):
+        try:
+            self.ext_settings["show_crypto"] = self._optShowCrypto.isSelected()
+            self.ext_settings["show_key_finder"] = self._optShowKf.isSelected()
+            self.ext_settings["show_app_setting"] = self._optShowAs.isSelected()
             try:
-                compile(src, "<crypto_snippet:%s:%s>" % (name, label), "exec")
-            except SyntaxError as se:
-                JOptionPane.showMessageDialog(
-                    self._mainPanel,
-                    "%s function syntax error on line %d:\n%s" % (label, se.lineno or 0, str(se.msg)),
-                    "CipherKit - Syntax Error",
-                    JOptionPane.ERROR_MESSAGE
-                )
-                return
-        self.crypto_snippet_manager.update_snippet(name, enc, dec)
-        self._refreshCryptoAlgoList()
-        JOptionPane.showMessageDialog(
-            self._mainPanel, "Crypto snippet '%s' saved." % name,
-            "CipherKit", JOptionPane.INFORMATION_MESSAGE
-        )
-        print("[*] Crypto snippet saved: %s" % name)
+                self.ext_settings["default_token_length"] = int(self._optTokenLen.getText().strip())
+            except ValueError:
+                self.ext_settings["default_token_length"] = 64
+            
+            self._save_settings()
+            self.update_tab_visibility()
+            JOptionPane.showMessageDialog(self._mainPanel, "Extension settings saved and updated successfully!", "Settings Saved", JOptionPane.INFORMATION_MESSAGE)
+        except Exception as e:
+            JOptionPane.showMessageDialog(self._mainPanel, "Error saving settings: %s" % str(e), "Error", JOptionPane.ERROR_MESSAGE)
 
-    def _onLoadCryptoSnippet(self, event=None):
-        names = self.crypto_snippet_manager.get_all_names()
-        if not names:
-            JOptionPane.showMessageDialog(
-                self._mainPanel, "No crypto snippets available.",
-                "CipherKit - Load", JOptionPane.INFORMATION_MESSAGE
-            )
-            return
-        selected = JOptionPane.showInputDialog(
-            self._mainPanel, "Select a crypto snippet to load:",
-            "CipherKit - Load Crypto Snippet", JOptionPane.PLAIN_MESSAGE,
-            None, names, names[0]
-        )
-        if selected:
-            snippet = self.crypto_snippet_manager.get_snippet(str(selected))
-            if snippet:
-                self._cryptoSnippetNameField.setText(str(selected))
-                self._cryptoEncArea.setText(snippet.get("encrypt_code", ""))
-                self._cryptoDecArea.setText(snippet.get("decrypt_code", ""))
-                print("[*] Crypto snippet loaded: %s" % selected)
+    def update_tab_visibility(self):
+        show_crypto = self.ext_settings.get("show_crypto", True)
+        show_kf = self.ext_settings.get("show_key_finder", True)
+        show_as = self.ext_settings.get("show_app_setting", True)
+        
+        # Re-add to suite tab if we want to change extender level tabs
+        self._tabbedPane = JTabbedPane()
+        self._tabbedPane.addTab("Hash", self._generatorPanel)
+        if show_crypto:
+            self._tabbedPane.addTab("Crypto", self._cryptoPanel)
+        if show_kf:
+            self._tabbedPane.addTab("Key Finder", self._keyFinderPanel)
+        if show_as:
+            self._tabbedPane.addTab("AppSetting", self._settingPanel)
 
-    def _onDeleteCryptoSnippet(self, event=None):
-        names = self.crypto_snippet_manager.get_all_names()
-        if not names:
-            JOptionPane.showMessageDialog(
-                self._mainPanel, "No crypto snippets to delete.",
-                "CipherKit", JOptionPane.INFORMATION_MESSAGE
-            )
-            return
-        selected = JOptionPane.showInputDialog(
-            self._mainPanel, "Select a crypto snippet to delete:",
-            "CipherKit - Delete Crypto Snippet", JOptionPane.WARNING_MESSAGE,
-            None, names, names[0]
-        )
-        if selected:
-            confirm = JOptionPane.showConfirmDialog(
-                self._mainPanel, "Delete '%s'?" % selected,
-                "CipherKit - Confirm Delete", JOptionPane.YES_NO_OPTION
-            )
-            if confirm == JOptionPane.YES_OPTION:
-                self.crypto_snippet_manager.delete_snippet(str(selected))
-                self._refreshCryptoAlgoList()
+        # Clear and swap self._mainPanel center component
+        self._mainPanel.removeAll()
+        self._mainPanel.add(self._tabbedPane, BorderLayout.CENTER)
+        self._mainPanel.revalidate()
+        self._mainPanel.repaint()
+
+        # Broadcast to all inline editor tabs
+        alive_tabs = []
+        for tab in self._editor_tabs:
+            try:
+                tab.update_tab_visibility()
+                alive_tabs.append(tab)
+            except Exception:
+                pass
+        self._editor_tabs = alive_tabs
+

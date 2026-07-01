@@ -36,3 +36,4 @@ env/
 
 # Sensitive / local config
 # (snippets.json is intentionally tracked as it holds shared algorithms)
+ext_settings.json
