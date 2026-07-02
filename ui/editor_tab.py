@@ -305,7 +305,9 @@ class HashGenEditorTab(IMessageEditorTab):
         appSettingTabPanel.add(_pt_epRow, pgbc)
 
         # Row 3: Apply Custom Value (inline key + value + button)
-        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.gridwidth = 2; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        appSettingTabPanel.add(JLabel("Update Value:"), pgbc)
+        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         _pt_applyRow = JPanel(BorderLayout(4, 0))
         
         _pt_left = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0))
@@ -323,7 +325,6 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_doApplyBtn.setToolTipText("Update this key in all endpoints of the selected app and save")
         _pt_applyRow.add(_pt_doApplyBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_applyRow, pgbc)
-        pgbc.gridwidth = 1  # restore
 
         # Filler row to push content to top
         pgbc.gridy = 4; pgbc.gridx = 0; pgbc.gridwidth = 2
