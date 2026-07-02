@@ -272,9 +272,12 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_appBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
         _pt_loadBtn = JButton("Load", actionPerformed=self._onInlineLoadSetting)
         _pt_loadBtn.setToolTipText("Load selected app setting into all config fields")
+        _pt_applyValBtn = JButton("Apply Custom Value", actionPerformed=self._onInlineApplyCustomValue)
+        _pt_applyValBtn.setToolTipText("Bulk-update a custom data key value across all endpoints of the selected app")
         _pt_delBtn  = JButton("Delete App", actionPerformed=self._onInlineDeleteSetting)
         _pt_delBtn.setToolTipText("Delete this app setting and all its endpoints")
         _pt_appBtns.add(_pt_loadBtn)
+        _pt_appBtns.add(_pt_applyValBtn)
         _pt_appBtns.add(_pt_delBtn)
         _pt_appRow.add(_pt_appBtns, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_appRow, pgbc)
@@ -354,12 +357,10 @@ class HashGenEditorTab(IMessageEditorTab):
         outputWrap = JPanel(BorderLayout(0, 2))
         outputWrap.setMinimumSize(Dimension(0, 40))
 
-        # Header row: label on left, checkbox on right, timestamp button
+        # Header row: label on left, checkbox on right
         outputHeader = JPanel(FlowLayout(FlowLayout.LEFT, 10, 0))
         self._outputLabel = JLabel("Hash Output: ")
         outputHeader.add(self._outputLabel)
-        self._inlineStatusLabel = JLabel("")
-        outputHeader.add(self._inlineStatusLabel)
         self._autoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
         self._autoEncryptChk.setToolTipText(
             "When checked: editing the decrypted text automatically re-encrypts it back into the request body"
@@ -1045,49 +1046,13 @@ class HashGenEditorTab(IMessageEditorTab):
             crypto_output_mode = str(self._extender._activeOutputCombo.getSelectedItem()) == "Crypto"
         except Exception:
             crypto_output_mode = False
+        self._shouldCompareHash = False
         if not crypto_output_mode:
             text = str(result)
             self._lastHashText = text
             self._hashOutput.setText(text)
 
-            # Compare newly generated hash with the old hash in the request body (only if triggered by apply)
-            if hasattr(self, '_inlineStatusLabel'):
-                try:
-                    if getattr(self, '_shouldCompareHash', False):
-                        body_str = self._bodyArea.getText().strip()
-                        ct = getattr(self, '_contentType', '')
-                        payload = parse_body(body_str, ct)
-                        if isinstance(payload, dict):
-                            flat_payload = flatten_data(payload)
-                            hash_key = self._hashFieldName.getText().strip() or "hash"
-                            old_hash = flat_payload.get(hash_key)
-                            if old_hash and not text.startswith("Error"):
-                                old_h = str(old_hash).strip().lower()
-                                new_h = str(text).strip().lower()
-                                if old_h == new_h:
-                                    self._inlineStatusLabel.setForeground(Color(0, 150, 0))  # Green
-                                    self._inlineStatusLabel.setText("(Valid)")
-                                else:
-                                    self._inlineStatusLabel.setForeground(Color(200, 0, 0))  # Red
-                                    self._inlineStatusLabel.setText("(Invalid)")
-                            else:
-                                self._inlineStatusLabel.setText("")
-                        else:
-                            self._inlineStatusLabel.setText("")
-                    else:
-                        self._inlineStatusLabel.setText("")
-                except Exception:
-                    self._inlineStatusLabel.setText("")
-                finally:
-                    self._shouldCompareHash = False
-        else:
-            if hasattr(self, '_inlineStatusLabel'):
-                self._inlineStatusLabel.setText("")
-            self._shouldCompareHash = False
-
     def _onGenerateAndInject(self, event=None):
-        if hasattr(self, '_inlineStatusLabel'):
-            self._inlineStatusLabel.setText("")
         result, debug_log = self._computeHash()
         # Determine if Hash tab output is in Crypto mode (output area shows decrypted text)
         try:
@@ -1331,6 +1296,71 @@ class HashGenEditorTab(IMessageEditorTab):
                 pass
             self._inlineSettingStatus.setText("Deleted: %s" % name)
             print("[CipherKit] AppSetting deleted: %s" % name)
+
+    def _onInlineApplyCustomValue(self, event=None):
+        """Prompt for a custom data key + value, then update that key across all
+        endpoints (and the shared custom_data) of the currently selected app."""
+        name = str(self._inlineSettingCombo.getSelectedItem())
+        if name == "(none)":
+            JOptionPane.showMessageDialog(self._panel, "Please select an app setting first.",
+                                          "Apply Custom Value", JOptionPane.WARNING_MESSAGE)
+            return
+        mgr = self._extender.app_setting_manager
+        app = mgr.get_app(name)
+        if not app:
+            JOptionPane.showMessageDialog(self._panel, "App configuration not found.",
+                                          "Apply Custom Value", JOptionPane.ERROR_MESSAGE)
+            return
+
+        # Step 1 - ask which key to update
+        key_name = JOptionPane.showInputDialog(
+            self._panel,
+            "Enter the custom data key name to update (e.g. token):",
+            "Apply Custom Value - Key",
+            JOptionPane.QUESTION_MESSAGE
+        )
+        if key_name is None:
+            return
+        key_name = str(key_name).strip()
+        if not key_name:
+            return
+
+        # Step 2 - ask for the new value
+        new_val = JOptionPane.showInputDialog(
+            self._panel,
+            "Enter the new value for '%s':" % key_name,
+            "Apply Custom Value - Value",
+            JOptionPane.QUESTION_MESSAGE
+        )
+        if new_val is None:
+            return
+        new_val = str(new_val)
+
+        # Step 3 - update wherever the key appears
+        count = 0
+        shared = app.get("custom_data", {})
+        if key_name in shared:
+            shared[key_name] = new_val
+            count += 1
+        for pat, ep in app.get("endpoints", {}).items():
+            ep_custom = ep.get("custom_data", {})
+            if key_name in ep_custom:
+                ep_custom[key_name] = new_val
+                count += 1
+
+        if count == 0:
+            JOptionPane.showMessageDialog(
+                self._panel,
+                "Key '%s' was not found in any custom data for app '%s'.\n"
+                "Check that the key exists in at least one endpoint's Custom Data." % (key_name, name),
+                "Apply Custom Value", JOptionPane.WARNING_MESSAGE)
+            return
+
+        mgr.save()
+        JOptionPane.showMessageDialog(
+            self._panel,
+            "Key '%s' updated to '%s' in %d location(s)." % (key_name, new_val, count),
+            "Apply Custom Value", JOptionPane.INFORMATION_MESSAGE)
 
     def _onCryptoRun(self, event=None):
         """Run AES-CBC encrypt/decrypt on the named body field and show result."""
