@@ -136,9 +136,16 @@ class HashGenEditorTab(IMessageEditorTab):
 
         # Row 3: Buttons (spans columns 0-3)
         hgbc.gridy = 3; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
-        hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
-        hashBtnPanel.add(self._genBtn)
-        hashBtnPanel.add(self._injectBtn)
+        hashBtnPanel = JPanel(BorderLayout())
+        self._inlineStatusLabel = JLabel("")
+        self._inlineStatusLabel.setFont(Font("SansSerif", Font.BOLD, 11))
+        hashBtnPanel.add(self._inlineStatusLabel, BorderLayout.WEST)
+        
+        genBtnContainer = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        genBtnContainer.add(self._genBtn)
+        genBtnContainer.add(self._injectBtn)
+        hashBtnPanel.add(genBtnContainer, BorderLayout.EAST)
+        
         hashConfigPanel.add(hashBtnPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
@@ -1046,7 +1053,38 @@ class HashGenEditorTab(IMessageEditorTab):
             self._lastHashText = text
             self._hashOutput.setText(text)
 
+            # Compare newly generated hash with the old hash in the request body
+            if hasattr(self, '_inlineStatusLabel'):
+                try:
+                    body_str = self._bodyArea.getText().strip()
+                    ct = getattr(self, '_contentType', '')
+                    payload = parse_body(body_str, ct)
+                    if isinstance(payload, dict):
+                        flat_payload = flatten_data(payload)
+                        hash_key = self._hashFieldName.getText().strip() or "hash"
+                        old_hash = flat_payload.get(hash_key)
+                        if old_hash and not text.startswith("Error"):
+                            old_h = str(old_hash).strip().lower()
+                            new_h = str(text).strip().lower()
+                            if old_h == new_h:
+                                self._inlineStatusLabel.setForeground(Color(0, 150, 0))  # Green
+                                self._inlineStatusLabel.setText("Status: Valid (Generated hash matches payload)")
+                            else:
+                                self._inlineStatusLabel.setForeground(Color(200, 0, 0))  # Red
+                                self._inlineStatusLabel.setText("Status: Invalid / Mismatch (Generated hash does not match payload)")
+                        else:
+                            self._inlineStatusLabel.setText("")
+                    else:
+                        self._inlineStatusLabel.setText("")
+                except Exception:
+                    self._inlineStatusLabel.setText("")
+        else:
+            if hasattr(self, '_inlineStatusLabel'):
+                self._inlineStatusLabel.setText("")
+
     def _onGenerateAndInject(self, event=None):
+        if hasattr(self, '_inlineStatusLabel'):
+            self._inlineStatusLabel.setText("")
         result, debug_log = self._computeHash()
         # Determine if Hash tab output is in Crypto mode (output area shows decrypted text)
         try:

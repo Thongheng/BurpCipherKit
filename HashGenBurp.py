@@ -507,8 +507,15 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         tgbc.gridy = 4
         tgbc.gridx = 0; tgbc.gridwidth = 4; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
         tgbc.insets = Insets(8, 5, 4, 5)
-        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
-        btnPanel.add(self._generateBtn)
+        btnPanel = JPanel(BorderLayout())
+        self._mainStatusLabel = JLabel("")
+        self._mainStatusLabel.setFont(Font("SansSerif", Font.BOLD, 12))
+        btnPanel.add(self._mainStatusLabel, BorderLayout.WEST)
+        
+        genBtnContainer = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
+        genBtnContainer.add(self._generateBtn)
+        btnPanel.add(genBtnContainer, BorderLayout.EAST)
+        
         topPanel.add(btnPanel, tgbc)
 
         # --- Bottom side: text areas with label above each box ---
@@ -1320,6 +1327,20 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             # 1. Update Sign Order field
             self._keysOrderField.setText(", ".join(selected_match))
             
+            # Copy Key Finder's request body to Hash tab's payload area
+            kf_body = self._kfBodyArea.getText()
+            if kf_body:
+                self._payloadArea.setText(kf_body)
+            
+            # Copy body format from Key Finder to Hash tab
+            kf_fmt = str(self._kfFormatCombo.getSelectedItem())
+            if kf_fmt == "JSON":
+                self._bodyFormatCombo.setSelectedItem("JSON")
+            elif kf_fmt == "Form Data":
+                self._bodyFormatCombo.setSelectedItem("URL-encoded")
+            elif kf_fmt == "Multipart":
+                self._bodyFormatCombo.setSelectedItem("multipart/form-data")
+            
             # 2. Merge Key Finder extra fields into Hash tab's custom data panel
             hash_pairs = self._customDataPanel.getPairs()
             kf_pairs = self._kfAdditionalPanel.getPairs()
@@ -1450,12 +1471,16 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         if not name:
             self._outputArea.setText("Error: No algorithm selected.")
             self._debugArea.setText("")
+            if hasattr(self, '_mainStatusLabel'):
+                self._mainStatusLabel.setText("")
             return
 
         snippet = self.snippet_manager.get_snippet(str(name))
         if not snippet:
             self._outputArea.setText("Error: Snippet '%s' not found." % name)
             self._debugArea.setText("")
+            if hasattr(self, '_mainStatusLabel'):
+                self._mainStatusLabel.setText("")
             return
 
         try:
@@ -1478,6 +1503,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             if not payload:
                 self._outputArea.setText("Error: Payload could not be parsed or is empty.")
                 self._debugArea.setText("")
+                if hasattr(self, '_mainStatusLabel'):
+                    self._mainStatusLabel.setText("")
                 return
             passcode = self._passcodeField.getText()
             custom_data = self._customDataPanel.getPairs()
@@ -1498,7 +1525,32 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._outputArea.setText(result_str)
             self._debugArea.setText(str(debug_log))
 
+            # Status check against old hash in the body
+            if hasattr(self, '_mainStatusLabel'):
+                try:
+                    if isinstance(payload, dict):
+                        flat_payload = flatten_data(payload)
+                        hash_key = self._mainHashFieldName.getText().strip() or "hash"
+                        old_hash = flat_payload.get(hash_key)
+                        if old_hash and not result_str.startswith("Error"):
+                            old_h = str(old_hash).strip().lower()
+                            new_h = str(result_str).strip().lower()
+                            if old_h == new_h:
+                                self._mainStatusLabel.setForeground(Color(0, 150, 0))  # Green
+                                self._mainStatusLabel.setText("Status: Valid (Generated hash matches payload)")
+                            else:
+                                self._mainStatusLabel.setForeground(Color(200, 0, 0))  # Red
+                                self._mainStatusLabel.setText("Status: Invalid / Mismatch (Generated hash does not match payload)")
+                        else:
+                            self._mainStatusLabel.setText("")
+                    else:
+                        self._mainStatusLabel.setText("")
+                except Exception:
+                    self._mainStatusLabel.setText("")
+
         except Exception as e:
+            if hasattr(self, '_mainStatusLabel'):
+                self._mainStatusLabel.setText("")
             self._outputArea.setText("Error: %s" % str(e))
             self._debugArea.setText(traceback.format_exc())
 
