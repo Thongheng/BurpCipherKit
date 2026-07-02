@@ -337,7 +337,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._appSettingTabPanel = appSettingTabPanel
 
         self._configTabs = configTabs
-        configTabs.setPreferredSize(Dimension(0, 142))
+        configTabs.setPreferredSize(Dimension(0, 165))
         self._panel.add(configTabs, BorderLayout.NORTH)
         self.update_tab_visibility()
 
@@ -1365,9 +1365,13 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception as e:
             print("[CipherKit] Error updating current UI Custom Data: %s" % str(e))
 
-        # Also refresh main tab summary if available
+        # Also refresh main tab summary and inline tab summary if available
         try:
             self._extender._refreshSettingSummary()
+        except Exception:
+            pass
+        try:
+            self._refreshInlineSettingInfo()
         except Exception:
             pass
 
