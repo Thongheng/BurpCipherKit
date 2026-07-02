@@ -1375,11 +1375,6 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception:
             pass
 
-        JOptionPane.showMessageDialog(
-            self._panel,
-            "Key '%s' updated in %d location(s)." % (key_name, count),
-            "Apply Custom Value", JOptionPane.INFORMATION_MESSAGE)
-
     def _onCryptoRun(self, event=None):
         """Run AES-CBC encrypt/decrypt on the named body field and show result."""
         try:

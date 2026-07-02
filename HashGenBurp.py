@@ -933,11 +933,6 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         except Exception as e:
             print("[CipherKit] Error updating current UI Custom Data: %s" % str(e))
 
-        JOptionPane.showMessageDialog(
-            self._panel,
-            "Key '%s' updated to '%s' in %d location(s)." % (key_name, new_val, count),
-            "Apply Custom Value", JOptionPane.INFORMATION_MESSAGE)
-
     def _onSettingComboChange(self, event=None):
         self._refreshSettingSummary()
 
