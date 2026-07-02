@@ -921,6 +921,18 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         # Persist changes (app dict is a live reference, just call save())
         self.app_setting_manager.save()
         self._refreshSettingSummary()
+
+        # Update current active UI's custom data panel if the key is loaded
+        try:
+            hash_pairs = self._customDataPanel.getPairs()
+            if key_name in hash_pairs:
+                hash_pairs[key_name] = new_val
+                self._customDataPanel.setPairs(hash_pairs)
+                # Auto-generate the hash to update output immediately!
+                self._onGenerate()
+        except Exception as e:
+            print("[CipherKit] Error updating current UI Custom Data: %s" % str(e))
+
         JOptionPane.showMessageDialog(
             self._panel,
             "Key '%s' updated to '%s' in %d location(s)." % (key_name, new_val, count),

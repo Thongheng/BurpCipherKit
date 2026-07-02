@@ -305,24 +305,25 @@ class HashGenEditorTab(IMessageEditorTab):
         appSettingTabPanel.add(_pt_epRow, pgbc)
 
         # Row 3: Apply Custom Value (inline key + value + button)
-        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
-        appSettingTabPanel.add(JLabel("Custom Value:"), pgbc)
-        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.gridwidth = 2; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         _pt_applyRow = JPanel(BorderLayout(4, 0))
-        _pt_applyFields = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
-        _pt_applyFields.add(JLabel("Name:"))
-        self._inlineCustomKeyField = JTextField("token", 10)
+        
+        _pt_left = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0))
+        self._inlineCustomKeyField = JTextField("token", 7)
         self._inlineCustomKeyField.setToolTipText("Custom data key name (e.g. token)")
-        _pt_applyFields.add(self._inlineCustomKeyField)
-        _pt_applyFields.add(JLabel("Value:"))
-        self._inlineCustomValField = JTextField("", 18)
+        _pt_left.add(self._inlineCustomKeyField)
+        _pt_left.add(JLabel(" :"))
+        _pt_applyRow.add(_pt_left, BorderLayout.WEST)
+        
+        self._inlineCustomValField = JTextField("")
         self._inlineCustomValField.setToolTipText("New value to set for all matching keys")
-        _pt_applyFields.add(self._inlineCustomValField)
-        _pt_applyRow.add(_pt_applyFields, BorderLayout.CENTER)
+        _pt_applyRow.add(self._inlineCustomValField, BorderLayout.CENTER)
+        
         _pt_doApplyBtn = JButton("Apply", actionPerformed=self._onInlineApplyCustomValue)
         _pt_doApplyBtn.setToolTipText("Update this key in all endpoints of the selected app and save")
         _pt_applyRow.add(_pt_doApplyBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_applyRow, pgbc)
+        pgbc.gridwidth = 1  # restore
 
         # Filler row to push content to top
         pgbc.gridy = 4; pgbc.gridx = 0; pgbc.gridwidth = 2
@@ -1330,7 +1331,7 @@ class HashGenEditorTab(IMessageEditorTab):
             return
         new_val = self._inlineCustomValField.getText()  # allow empty string
 
-        # Update wherever the key appears
+        # Update wherever the key appears in settings
         count = 0
         shared = app.get("custom_data", {})
         if key_name in shared:
@@ -1351,11 +1352,24 @@ class HashGenEditorTab(IMessageEditorTab):
             return
 
         mgr.save()
+
+        # Update current active UI's custom data panel if the key is loaded
+        try:
+            hash_pairs = self._customDataPanel.getPairs()
+            if key_name in hash_pairs:
+                hash_pairs[key_name] = new_val
+                self._customDataPanel.setPairs(hash_pairs)
+                # Auto-generate the hash to update output immediately!
+                self._onGenerate()
+        except Exception as e:
+            print("[CipherKit] Error updating current UI Custom Data: %s" % str(e))
+
         # Also refresh main tab summary if available
         try:
             self._extender._refreshSettingSummary()
         except Exception:
             pass
+
         JOptionPane.showMessageDialog(
             self._panel,
             "Key '%s' updated in %d location(s)." % (key_name, count),
