@@ -272,12 +272,9 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_appBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
         _pt_loadBtn = JButton("Load", actionPerformed=self._onInlineLoadSetting)
         _pt_loadBtn.setToolTipText("Load selected app setting into all config fields")
-        _pt_applyValBtn = JButton("Apply Custom Value", actionPerformed=self._onInlineApplyCustomValue)
-        _pt_applyValBtn.setToolTipText("Bulk-update a custom data key value across all endpoints of the selected app")
         _pt_delBtn  = JButton("Delete App", actionPerformed=self._onInlineDeleteSetting)
         _pt_delBtn.setToolTipText("Delete this app setting and all its endpoints")
         _pt_appBtns.add(_pt_loadBtn)
-        _pt_appBtns.add(_pt_applyValBtn)
         _pt_appBtns.add(_pt_delBtn)
         _pt_appRow.add(_pt_appBtns, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_appRow, pgbc)
@@ -307,14 +304,25 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_epRow.add(_pt_saveEpBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_epRow, pgbc)
 
-        # Row 3: Status / last auto-load info
+        # Row 3: Apply Custom Value (inline key + value + button)
         pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
-        appSettingTabPanel.add(JLabel("Status:"), pgbc)
+        appSettingTabPanel.add(JLabel("Custom Value:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
-        self._inlineSettingStatus = JTextField("No setting loaded")
-        self._inlineSettingStatus.setEditable(False)
-        self._inlineSettingStatus.setForeground(Color(80, 80, 80))
-        appSettingTabPanel.add(self._inlineSettingStatus, pgbc)
+        _pt_applyRow = JPanel(BorderLayout(4, 0))
+        _pt_applyFields = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        _pt_applyFields.add(JLabel("Name:"))
+        self._inlineCustomKeyField = JTextField("token", 10)
+        self._inlineCustomKeyField.setToolTipText("Custom data key name (e.g. token)")
+        _pt_applyFields.add(self._inlineCustomKeyField)
+        _pt_applyFields.add(JLabel("Value:"))
+        self._inlineCustomValField = JTextField("", 18)
+        self._inlineCustomValField.setToolTipText("New value to set for all matching keys")
+        _pt_applyFields.add(self._inlineCustomValField)
+        _pt_applyRow.add(_pt_applyFields, BorderLayout.CENTER)
+        _pt_doApplyBtn = JButton("Apply", actionPerformed=self._onInlineApplyCustomValue)
+        _pt_doApplyBtn.setToolTipText("Update this key in all endpoints of the selected app and save")
+        _pt_applyRow.add(_pt_doApplyBtn, BorderLayout.EAST)
+        appSettingTabPanel.add(_pt_applyRow, pgbc)
 
         # Filler row to push content to top
         pgbc.gridy = 4; pgbc.gridx = 0; pgbc.gridwidth = 2
@@ -587,7 +595,8 @@ class HashGenEditorTab(IMessageEditorTab):
             # Update AppSetting tab UI
             try:
                 self._inlineSettingCombo.setSelectedItem(app_name)
-                self._inlineSettingStatus.setText("Auto-loaded: %s / %s" % (app_name, pattern))
+                if hasattr(self, '_inlineSettingStatus'):
+                    self._inlineSettingStatus.setText("Auto-loaded: %s / %s" % (app_name, pattern))
                 self._inlineUrlLabel.setText(getattr(self, '_requestPath', ''))
                 if ep:
                     self._inlineEpKeysField.setText(ep.get("keys_order", ""))
@@ -1166,7 +1175,8 @@ class HashGenEditorTab(IMessageEditorTab):
             pass
         label = "%s%s" % (app_name, (" / " + pattern) if pattern else "")
         try:
-            self._inlineSettingStatus.setText("Saved: %s" % label)
+            if hasattr(self, '_inlineSettingStatus'):
+                self._inlineSettingStatus.setText("Saved: %s" % label)
         except Exception:
             pass
         self._hashOutput.setText("Saved: %s" % label)
@@ -1294,12 +1304,13 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._extender._refreshSettingCombo()
             except:
                 pass
-            self._inlineSettingStatus.setText("Deleted: %s" % name)
+            if hasattr(self, '_inlineSettingStatus'):
+                self._inlineSettingStatus.setText("Deleted: %s" % name)
             print("[CipherKit] AppSetting deleted: %s" % name)
 
     def _onInlineApplyCustomValue(self, event=None):
-        """Prompt for a custom data key + value, then update that key across all
-        endpoints (and the shared custom_data) of the currently selected app."""
+        """Read key name + value from the inline fields and bulk-update across all
+        endpoints (and shared custom_data) of the currently selected app."""
         name = str(self._inlineSettingCombo.getSelectedItem())
         if name == "(none)":
             JOptionPane.showMessageDialog(self._panel, "Please select an app setting first.",
@@ -1312,31 +1323,14 @@ class HashGenEditorTab(IMessageEditorTab):
                                           "Apply Custom Value", JOptionPane.ERROR_MESSAGE)
             return
 
-        # Step 1 - ask which key to update
-        key_name = JOptionPane.showInputDialog(
-            self._panel,
-            "Enter the custom data key name to update (e.g. token):",
-            "Apply Custom Value - Key",
-            JOptionPane.QUESTION_MESSAGE
-        )
-        if key_name is None:
-            return
-        key_name = str(key_name).strip()
+        key_name = self._inlineCustomKeyField.getText().strip()
         if not key_name:
+            JOptionPane.showMessageDialog(self._panel, "Please enter a key name.",
+                                          "Apply Custom Value", JOptionPane.WARNING_MESSAGE)
             return
+        new_val = self._inlineCustomValField.getText()  # allow empty string
 
-        # Step 2 - ask for the new value
-        new_val = JOptionPane.showInputDialog(
-            self._panel,
-            "Enter the new value for '%s':" % key_name,
-            "Apply Custom Value - Value",
-            JOptionPane.QUESTION_MESSAGE
-        )
-        if new_val is None:
-            return
-        new_val = str(new_val)
-
-        # Step 3 - update wherever the key appears
+        # Update wherever the key appears
         count = 0
         shared = app.get("custom_data", {})
         if key_name in shared:
@@ -1357,9 +1351,14 @@ class HashGenEditorTab(IMessageEditorTab):
             return
 
         mgr.save()
+        # Also refresh main tab summary if available
+        try:
+            self._extender._refreshSettingSummary()
+        except Exception:
+            pass
         JOptionPane.showMessageDialog(
             self._panel,
-            "Key '%s' updated to '%s' in %d location(s)." % (key_name, new_val, count),
+            "Key '%s' updated in %d location(s)." % (key_name, count),
             "Apply Custom Value", JOptionPane.INFORMATION_MESSAGE)
 
     def _onCryptoRun(self, event=None):
