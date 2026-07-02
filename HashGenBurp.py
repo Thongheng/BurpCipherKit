@@ -360,9 +360,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         appPanel.add(JScrollPane(self._settingSummaryArea), BorderLayout.CENTER)
         
         actRow = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
-        self._saveNewSettingBtn = JButton("Save New", actionPerformed=self._onSaveNewSetting)
-        self._updateSettingBtn  = JButton("Update Existing", actionPerformed=self._onUpdateSetting)
-        self._deleteSettingBtn  = JButton("Delete App", actionPerformed=self._onDeleteSetting)
+        self._applyCustomValueBtn = JButton("Apply Custom Value", actionPerformed=self._onApplyCustomValue)
+        self._saveNewSettingBtn   = JButton("Save New", actionPerformed=self._onSaveNewSetting)
+        self._updateSettingBtn    = JButton("Update Existing", actionPerformed=self._onUpdateSetting)
+        self._deleteSettingBtn    = JButton("Delete App", actionPerformed=self._onDeleteSetting)
+        actRow.add(self._applyCustomValueBtn)
         actRow.add(self._saveNewSettingBtn)
         actRow.add(self._updateSettingBtn)
         actRow.add(self._deleteSettingBtn)
@@ -855,6 +857,74 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 "field":     self._mainCryptoField.getText().strip() or "data",
             },
         }
+
+    def _onApplyCustomValue(self, event=None):
+        """Prompt for a custom data key + value, then update that key across all
+        endpoints (and the shared custom_data) of the currently selected app."""
+        name = str(self._settingCombo.getSelectedItem())
+        if name == "(none)":
+            JOptionPane.showMessageDialog(self._panel, "Please select an app setting first.",
+                                          "Apply Custom Value", JOptionPane.WARNING_MESSAGE)
+            return
+        app = self.app_setting_manager.get_app(name)
+        if not app:
+            JOptionPane.showMessageDialog(self._panel, "App configuration not found.",
+                                          "Apply Custom Value", JOptionPane.ERROR_MESSAGE)
+            return
+
+        # Step 1 – ask which key to update
+        key_name = JOptionPane.showInputDialog(
+            self._panel,
+            "Enter the custom data key name to update (e.g. token):",
+            "Apply Custom Value – Key",
+            JOptionPane.QUESTION_MESSAGE
+        )
+        if key_name is None:
+            return
+        key_name = str(key_name).strip()
+        if not key_name:
+            return
+
+        # Step 2 – ask for the new value
+        new_val = JOptionPane.showInputDialog(
+            self._panel,
+            "Enter the new value for '%s':" % key_name,
+            "Apply Custom Value – Value",
+            JOptionPane.QUESTION_MESSAGE
+        )
+        if new_val is None:
+            return
+        new_val = str(new_val)  # allow empty string
+
+        # Step 3 – update wherever the key appears
+        count = 0
+        # Shared custom_data
+        shared = app.get("custom_data", {})
+        if key_name in shared:
+            shared[key_name] = new_val
+            count += 1
+        # Per-endpoint custom_data
+        for pat, ep in app.get("endpoints", {}).items():
+            ep_custom = ep.get("custom_data", {})
+            if key_name in ep_custom:
+                ep_custom[key_name] = new_val
+                count += 1
+
+        if count == 0:
+            JOptionPane.showMessageDialog(
+                self._panel,
+                "Key '%s' was not found in any custom data for app '%s'.\n"
+                "Check that the key exists in at least one endpoint's Custom Data." % (key_name, name),
+                "Apply Custom Value", JOptionPane.WARNING_MESSAGE)
+            return
+
+        # Persist changes (app dict is a live reference, just call save())
+        self.app_setting_manager.save()
+        self._refreshSettingSummary()
+        JOptionPane.showMessageDialog(
+            self._panel,
+            "Key '%s' updated to '%s' in %d location(s)." % (key_name, new_val, count),
+            "Apply Custom Value", JOptionPane.INFORMATION_MESSAGE)
 
     def _onSettingComboChange(self, event=None):
         self._refreshSettingSummary()
