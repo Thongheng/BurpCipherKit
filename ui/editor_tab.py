@@ -53,6 +53,7 @@ class HashGenEditorTab(IMessageEditorTab):
         self._keysUserEdited = False
         self._lastHashText   = ""  # saved hash result; restored when returning to Hash tab
         self._lastKfMatches  = []  # cached Key Finder results for Apply feature
+        self._shouldCompareHash = False
 
         # Fonts
         monoFont  = Font("Monospaced", Font.PLAIN, 12)
@@ -136,16 +137,9 @@ class HashGenEditorTab(IMessageEditorTab):
 
         # Row 3: Buttons (spans columns 0-3)
         hgbc.gridy = 3; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
-        hashBtnPanel = JPanel(BorderLayout())
-        self._inlineStatusLabel = JLabel("")
-        self._inlineStatusLabel.setFont(Font("SansSerif", Font.BOLD, 11))
-        hashBtnPanel.add(self._inlineStatusLabel, BorderLayout.WEST)
-        
-        genBtnContainer = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
-        genBtnContainer.add(self._genBtn)
-        genBtnContainer.add(self._injectBtn)
-        hashBtnPanel.add(genBtnContainer, BorderLayout.EAST)
-        
+        hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        hashBtnPanel.add(self._genBtn)
+        hashBtnPanel.add(self._injectBtn)
         hashConfigPanel.add(hashBtnPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
@@ -364,6 +358,8 @@ class HashGenEditorTab(IMessageEditorTab):
         outputHeader = JPanel(FlowLayout(FlowLayout.LEFT, 10, 0))
         self._outputLabel = JLabel("Hash Output: ")
         outputHeader.add(self._outputLabel)
+        self._inlineStatusLabel = JLabel("")
+        outputHeader.add(self._inlineStatusLabel)
         self._autoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
         self._autoEncryptChk.setToolTipText(
             "When checked: editing the decrypted text automatically re-encrypts it back into the request body"
@@ -889,6 +885,7 @@ class HashGenEditorTab(IMessageEditorTab):
             
             # 4. Trigger auto-rehash immediately with the newly applied fields
             try:
+                self._shouldCompareHash = True
                 self._onGenerate()
             except Exception:
                 pass
@@ -1053,34 +1050,40 @@ class HashGenEditorTab(IMessageEditorTab):
             self._lastHashText = text
             self._hashOutput.setText(text)
 
-            # Compare newly generated hash with the old hash in the request body
+            # Compare newly generated hash with the old hash in the request body (only if triggered by apply)
             if hasattr(self, '_inlineStatusLabel'):
                 try:
-                    body_str = self._bodyArea.getText().strip()
-                    ct = getattr(self, '_contentType', '')
-                    payload = parse_body(body_str, ct)
-                    if isinstance(payload, dict):
-                        flat_payload = flatten_data(payload)
-                        hash_key = self._hashFieldName.getText().strip() or "hash"
-                        old_hash = flat_payload.get(hash_key)
-                        if old_hash and not text.startswith("Error"):
-                            old_h = str(old_hash).strip().lower()
-                            new_h = str(text).strip().lower()
-                            if old_h == new_h:
-                                self._inlineStatusLabel.setForeground(Color(0, 150, 0))  # Green
-                                self._inlineStatusLabel.setText("Status: Valid (Generated hash matches payload)")
+                    if getattr(self, '_shouldCompareHash', False):
+                        body_str = self._bodyArea.getText().strip()
+                        ct = getattr(self, '_contentType', '')
+                        payload = parse_body(body_str, ct)
+                        if isinstance(payload, dict):
+                            flat_payload = flatten_data(payload)
+                            hash_key = self._hashFieldName.getText().strip() or "hash"
+                            old_hash = flat_payload.get(hash_key)
+                            if old_hash and not text.startswith("Error"):
+                                old_h = str(old_hash).strip().lower()
+                                new_h = str(text).strip().lower()
+                                if old_h == new_h:
+                                    self._inlineStatusLabel.setForeground(Color(0, 150, 0))  # Green
+                                    self._inlineStatusLabel.setText("(Valid)")
+                                else:
+                                    self._inlineStatusLabel.setForeground(Color(200, 0, 0))  # Red
+                                    self._inlineStatusLabel.setText("(Invalid)")
                             else:
-                                self._inlineStatusLabel.setForeground(Color(200, 0, 0))  # Red
-                                self._inlineStatusLabel.setText("Status: Invalid / Mismatch (Generated hash does not match payload)")
+                                self._inlineStatusLabel.setText("")
                         else:
                             self._inlineStatusLabel.setText("")
                     else:
                         self._inlineStatusLabel.setText("")
                 except Exception:
                     self._inlineStatusLabel.setText("")
+                finally:
+                    self._shouldCompareHash = False
         else:
             if hasattr(self, '_inlineStatusLabel'):
                 self._inlineStatusLabel.setText("")
+            self._shouldCompareHash = False
 
     def _onGenerateAndInject(self, event=None):
         if hasattr(self, '_inlineStatusLabel'):

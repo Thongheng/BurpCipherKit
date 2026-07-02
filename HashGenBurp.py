@@ -101,6 +101,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self.ext_settings = self._load_settings()
         self._lastKfMatches = []
         self._editor_tabs = []  # track active editor tabs
+        self._shouldCompareHash = False
 
         # Build main tab UI synchronously
         SwingUtilities.invokeAndWait(self._buildUI)
@@ -507,15 +508,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         tgbc.gridy = 4
         tgbc.gridx = 0; tgbc.gridwidth = 4; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
         tgbc.insets = Insets(8, 5, 4, 5)
-        btnPanel = JPanel(BorderLayout())
-        self._mainStatusLabel = JLabel("")
-        self._mainStatusLabel.setFont(Font("SansSerif", Font.BOLD, 12))
-        btnPanel.add(self._mainStatusLabel, BorderLayout.WEST)
-        
-        genBtnContainer = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
-        genBtnContainer.add(self._generateBtn)
-        btnPanel.add(genBtnContainer, BorderLayout.EAST)
-        
+        btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
+        btnPanel.add(self._generateBtn)
         topPanel.add(btnPanel, tgbc)
 
         # --- Bottom side: text areas with label above each box ---
@@ -549,7 +543,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         # Result Hash label
         gbc.gridy  = 2; gbc.weighty = 0; gbc.fill = GridBagConstraints.HORIZONTAL
         gbc.insets = Insets(0, 0, 2, 0)
-        bottomPanel.add(JLabel("Result Hash:"), gbc)
+        resHashLabelPanel = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0))
+        resHashLabelPanel.add(JLabel("Result Hash:"))
+        self._mainStatusLabel = JLabel("")
+        resHashLabelPanel.add(self._mainStatusLabel)
+        bottomPanel.add(resHashLabelPanel, gbc)
 
         # Result Hash text area
         gbc.gridy  = 3; gbc.weighty = 0.2; gbc.fill = GridBagConstraints.BOTH
@@ -1356,6 +1354,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             
             # 4. Trigger rehash immediately with the newly applied fields
             try:
+                self._shouldCompareHash = True
                 self._onGenerate()
             except Exception:
                 pass
@@ -1473,6 +1472,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._debugArea.setText("")
             if hasattr(self, '_mainStatusLabel'):
                 self._mainStatusLabel.setText("")
+            self._shouldCompareHash = False
             return
 
         snippet = self.snippet_manager.get_snippet(str(name))
@@ -1481,6 +1481,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._debugArea.setText("")
             if hasattr(self, '_mainStatusLabel'):
                 self._mainStatusLabel.setText("")
+            self._shouldCompareHash = False
             return
 
         try:
@@ -1505,6 +1506,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 self._debugArea.setText("")
                 if hasattr(self, '_mainStatusLabel'):
                     self._mainStatusLabel.setText("")
+                self._shouldCompareHash = False
                 return
             passcode = self._passcodeField.getText()
             custom_data = self._customDataPanel.getPairs()
@@ -1525,10 +1527,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             self._outputArea.setText(result_str)
             self._debugArea.setText(str(debug_log))
 
-            # Status check against old hash in the body
+            # Status check against old hash in the body (only if triggered by apply)
             if hasattr(self, '_mainStatusLabel'):
                 try:
-                    if isinstance(payload, dict):
+                    if getattr(self, '_shouldCompareHash', False) and isinstance(payload, dict):
                         flat_payload = flatten_data(payload)
                         hash_key = self._mainHashFieldName.getText().strip() or "hash"
                         old_hash = flat_payload.get(hash_key)
@@ -1537,20 +1539,23 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                             new_h = str(result_str).strip().lower()
                             if old_h == new_h:
                                 self._mainStatusLabel.setForeground(Color(0, 150, 0))  # Green
-                                self._mainStatusLabel.setText("Status: Valid (Generated hash matches payload)")
+                                self._mainStatusLabel.setText("(Valid)")
                             else:
                                 self._mainStatusLabel.setForeground(Color(200, 0, 0))  # Red
-                                self._mainStatusLabel.setText("Status: Invalid / Mismatch (Generated hash does not match payload)")
+                                self._mainStatusLabel.setText("(Invalid)")
                         else:
                             self._mainStatusLabel.setText("")
                     else:
                         self._mainStatusLabel.setText("")
                 except Exception:
                     self._mainStatusLabel.setText("")
+                finally:
+                    self._shouldCompareHash = False
 
         except Exception as e:
             if hasattr(self, '_mainStatusLabel'):
                 self._mainStatusLabel.setText("")
+            self._shouldCompareHash = False
             self._outputArea.setText("Error: %s" % str(e))
             self._debugArea.setText(traceback.format_exc())
 
