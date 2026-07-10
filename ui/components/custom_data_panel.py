@@ -1,19 +1,11 @@
 # -*- coding: utf-8 -*-
 from javax.swing import (
-    JPanel, JLabel, JTextField, JTextArea, JButton, JComboBox, JCheckBox,
-    JScrollPane, JTabbedPane, JSplitPane, JOptionPane, BorderFactory,
-    SwingUtilities, BoxLayout, Box
+    JPanel, JLabel, JTextField, JButton, BoxLayout, Box
 )
-from javax.swing.border import EmptyBorder, TitledBorder, AbstractBorder
+from javax.swing.border import EmptyBorder
 from java.awt import (
-    BorderLayout, GridBagLayout, GridBagConstraints, Insets,
-    Font, Color, Dimension, FlowLayout, Component, GridLayout, RenderingHints
+    BorderLayout, Dimension, FlowLayout, Component
 )
-from java.awt.event import FocusAdapter, ActionListener
-from javax.swing.event import DocumentListener
-from javax.swing import Timer as _SwingTimer
-
-from ui.components.rounded_border import _roundedCompound
 
 class CustomDataPanel(JPanel):
     """
@@ -114,14 +106,6 @@ class CustomDataPanel(JPanel):
                 result[k] = v
         return result
 
-    def getKeys(self):
-        """Return list of non-empty key names."""
-        return [kf.getText().strip() for kf, vf in self._rows if kf.getText().strip()]
-
-    def getValues(self):
-        """Return list of values (backward compat)."""
-        return [vf.getText() for kf, vf in self._rows]
-
     def setPairs(self, pairs):
         """Set rows from a dict {key: value}."""
         self.removeAll()
@@ -131,11 +115,6 @@ class CustomDataPanel(JPanel):
             return
         for k, v in pairs.items():
             self._addFieldRow(str(k), str(v) if v else "")
-
-    def getFirstValue(self):
-        if self._rows:
-            return self._rows[0][1].getText()
-        return ""
 
 
 # =============================================================================
@@ -231,9 +210,6 @@ class CompactCustomDataPanel(JPanel):
     def getKeys(self):
         return [kf.getText().strip() for kf, vf in self._rows if kf.getText().strip()]
 
-    def getValues(self):
-        return [vf.getText() for kf, vf in self._rows]
-
     def setPairs(self, pairs):
         self.removeAll()
         self._rows = []
@@ -243,10 +219,6 @@ class CompactCustomDataPanel(JPanel):
         for k, v in pairs.items():
             self._addFieldRow(str(k), str(v) if v else "")
 
-    def getFirstValue(self):
-        if self._rows:
-            return self._rows[0][1].getText()
-        return ""
 
 
 # =============================================================================

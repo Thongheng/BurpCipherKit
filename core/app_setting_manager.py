@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
-
-from core.utils import _safe_encode
+import json, os
 
 class AppSettingManager(object):
     """Manages app-level settings stored in a JSON file.
@@ -80,7 +78,10 @@ class AppSettingManager(object):
     def save_app(self, name, data):
         """Save or update app-level config, preserving existing endpoints."""
         if name in self.app_settings:
-            data["endpoints"] = self.app_settings[name].get("endpoints", {})
+            existing = self.app_settings[name]
+            data["endpoints"] = existing.get("endpoints", {})
+            if "default_kf_key" not in data and "default_kf_key" in existing:
+                data["default_kf_key"] = existing["default_kf_key"]
         else:
             data.setdefault("endpoints", {})
         self.app_settings[name] = data
@@ -103,18 +104,44 @@ class AppSettingManager(object):
             self.save()
 
     def find_by_url(self, url_path):
-        """Return (app_name, app_data, url_pattern, endpoint_data) for first matching endpoint.
-        Improvement-3: supports fnmatch glob patterns (e.g. /api/user/*) in addition to
-        plain substring matching.
-        """
+        """Return the most-specific exact, glob, or substring endpoint match."""
         import fnmatch
+        candidates = []
+        sequence = 0
         for app_name, app in self.app_settings.items():
             for pattern, ep in app.get("endpoints", {}).items():
                 if not pattern:
                     continue
-                # Try glob match first, then fall back to substring
-                if fnmatch.fnmatch(url_path, pattern) or pattern in url_path:
-                    return (app_name, app, pattern, ep)
+                sequence += 1
+                if url_path == pattern:
+                    match_kind = 3
+                elif fnmatch.fnmatch(url_path, pattern):
+                    match_kind = 2
+                elif pattern in url_path:
+                    match_kind = 1
+                else:
+                    continue
+                literal_length = len(pattern.replace("*", "").replace("?", ""))
+                score = (match_kind, literal_length, -sequence)
+                candidates.append((score, app_name, app, pattern, ep))
+
+        if not candidates:
+            return (None, None, None, None)
+        best = max(candidates, key=lambda candidate: candidate[0])
+        return (best[1], best[2], best[3], best[4])
+
+    def resolve_for_url(self, url_path, default_app_name=None):
+        """Resolve an endpoint match, falling back to a configured default app."""
+        if url_path:
+            matched = self.find_by_url(url_path)
+            if matched[1]:
+                return matched
+
+        if default_app_name and default_app_name != "(none)":
+            app = self.get_app(default_app_name)
+            if app:
+                return (default_app_name, app, "(default load)", None)
+
         return (None, None, None, None)
 
 

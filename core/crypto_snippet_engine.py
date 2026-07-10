@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
+import json, base64, time, traceback
 from javax.crypto import Cipher
 from javax.crypto.spec import SecretKeySpec, IvParameterSpec
 

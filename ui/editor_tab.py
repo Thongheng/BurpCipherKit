@@ -1,24 +1,21 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
-from javax.crypto import Cipher
-from javax.crypto.spec import SecretKeySpec, IvParameterSpec
+import json, time, traceback
 from javax.swing import (
     JPanel, JLabel, JTextField, JTextArea, JTextPane, JButton, JComboBox, JCheckBox,
-    JScrollPane, JTabbedPane, JSplitPane, JOptionPane, BorderFactory,
-    SwingUtilities, BoxLayout, Box
+    JScrollPane, JTabbedPane, JSplitPane, JOptionPane
 )
-from javax.swing.border import EmptyBorder, TitledBorder, AbstractBorder
+from javax.swing.border import EmptyBorder
 from java.awt import (
     BorderLayout, GridBagLayout, GridBagConstraints, Insets,
-    Font, Color, Dimension, FlowLayout, Component, GridLayout, RenderingHints
+    Font, Color, Dimension, FlowLayout
 )
-from java.awt.event import FocusAdapter, ActionListener
+from java.awt.event import ActionListener
 from javax.swing.event import DocumentListener
 from javax.swing import Timer as _SwingTimer
 
 from burp import IMessageEditorTab
-from core.utils import _safe_encode, _DEBOUNCE_MS, _MONO_FONT_SIZE, _MAX_KF_FIELDS, _extract_request_path
+from core.utils import _safe_text, _DEBOUNCE_MS, _MONO_FONT_SIZE, _extract_request_path
 
 class _WrapPane(JTextPane):
     """JTextPane that wraps text to the viewport width."""
@@ -26,14 +23,15 @@ class _WrapPane(JTextPane):
         return True
 
 from core.body_parser import parse_body, serialize_body, flatten_data
-from core.snippet_manager import SnippetManager
 from core.crypto_engine import CryptoEngine, AesCbcEngine
-from core.crypto_snippet_manager import CryptoSnippetManager
 from core.crypto_snippet_engine import CryptoSnippetEngine
-from core.app_setting_manager import AppSettingManager
-from ui.components.rounded_border import RoundedBorder, _roundedCompound
-from ui.components.custom_data_panel import CustomDataPanel, CompactCustomDataPanel
-from ui.components.listeners import PayloadFocusListener, PayloadDocumentListener
+from core.key_finder import (
+    compare_generated_hash, format_hash_comparison,
+    should_render_hash_output, strip_hash_comparison,
+)
+from ui.components.rounded_border import RoundedBorder
+from ui.components.custom_data_panel import CompactCustomDataPanel
+from ui.components.listeners import PayloadDocumentListener
 
 class HashGenEditorTab(IMessageEditorTab):
     """
@@ -45,12 +43,11 @@ class HashGenEditorTab(IMessageEditorTab):
     def __init__(self, extender, controller, editable):
         self._extender = extender
         self._helpers  = extender._helpers
-        self._editable = editable
         self._isRequestContext = False
         self._currentMessage = None
-        self._headerBytes    = None
         self._contentType    = ""
         self._keysUserEdited = False
+        self._keysLoadingProgrammatically = False
         self._lastHashText   = ""  # saved hash result; restored when returning to Hash tab
         self._lastKfMatches  = []  # cached Key Finder results for Apply feature
         self._shouldCompareHash = False
@@ -93,53 +90,59 @@ class HashGenEditorTab(IMessageEditorTab):
         )
         self._hashFieldName = JTextField("hash")
         self._hashFieldName.setToolTipText("JSON key name where the output will be injected")
-        self._genBtn    = JButton("Generate",     actionPerformed=self._onGenerate)
-        self._injectBtn = JButton("Gen & Inject", actionPerformed=self._onGenerateAndInject)
+        self._injectBtn = JButton("Inject", actionPerformed=self._onGenerateAndInject)
         self._injectBtn.setToolTipText("Generate hash and inject into the request body")
+        self._inlineKfKnownArea = JTextField()
+        self._inlineKfKnownArea.setToolTipText("Paste the known concatenated string here for key order search")
 
         # Row 0: Algo & Secret
         hgbc.gridy = 0
-        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
+        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(JLabel("Algo:"), hgbc)
-        hgbc.gridx = 1; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL
+        hgbc.gridx = 1; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(self._algoCombo, hgbc)
 
-        hgbc.gridx = 2; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
+        hgbc.gridx = 2; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
         hgbc.insets = Insets(2, 16, 2, 4)  # spacer on left of Col 2
         self._passcodeLbl = JLabel("Secret:")
         hashConfigPanel.add(self._passcodeLbl, hgbc)
-        hgbc.gridx = 3; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL
+        hgbc.gridx = 3; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hgbc.insets = Insets(2, 4, 2, 4)  # restore insets
         hashConfigPanel.add(self._passcodeField, hgbc)
 
-        # Row 1: Sign Order & Output Field
+        # Row 1: Sign Order (spans columns 1-3)
         hgbc.gridy = 1
-        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
+        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(JLabel("Sign Order:"), hgbc)
-        hgbc.gridx = 1; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL
+        hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(self._keysField, hgbc)
+        hgbc.gridwidth = 1  # restore
 
-        hgbc.gridx = 2; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE
-        hgbc.insets = Insets(2, 16, 2, 4)
-        hashConfigPanel.add(JLabel("Output:"), hgbc)
-        hgbc.gridx = 3; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL
-        hgbc.insets = Insets(2, 4, 2, 4)
-        hashConfigPanel.add(self._hashFieldName, hgbc)
+        # Row 2: Known String (full width, spans columns 1-3)
+        hgbc.gridy = 2
+        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
+        hashConfigPanel.add(JLabel("Known String:"), hgbc)
+        hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
+        hashConfigPanel.add(self._inlineKfKnownArea, hgbc)
+        hgbc.gridwidth = 1  # restore
 
-        # Row 2: Custom Data (spans columns 0-3)
-        hgbc.gridy = 2; hgbc.gridx = 0; hgbc.gridwidth = 1; hgbc.weightx = 0
-        hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.NORTHWEST
+        # Row 3: Custom Data (spans columns 1-3)
+        hgbc.gridy = 3
+        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.NORTHWEST
         hashConfigPanel.add(JLabel("Custom Data:"), hgbc)
-        hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
-        hgbc.anchor = GridBagConstraints.WEST
+        hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(self._customDataPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
-        # Row 3: Buttons (spans columns 0-3)
-        hgbc.gridy = 3; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0; hgbc.fill = GridBagConstraints.HORIZONTAL
+        # Row 4: Buttons — Inject + Find Order (Generate removed: auto-hash handles it)
+        hgbc.gridy = 4; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0
+        hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.EAST
         hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
-        hashBtnPanel.add(self._genBtn)
+        self._inlineKfFindBtn = JButton("Find Order", actionPerformed=self._onInlineKfFind)
+        inlineTsBtn = JButton("Get Timestamp", actionPerformed=self._onInlineGetTimestamp)
+        hashBtnPanel.add(inlineTsBtn)
         hashBtnPanel.add(self._injectBtn)
+        hashBtnPanel.add(self._inlineKfFindBtn)
         hashConfigPanel.add(hashBtnPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
@@ -204,51 +207,7 @@ class HashGenEditorTab(IMessageEditorTab):
         cryptoConfigPanel.add(cryptoBtnPanel, cgbc)
         cgbc.gridwidth = 1  # restore
 
-        # ----------------------------------------------------------------
-        # Key Finder sub-tab panel (compact controls only - no Parsed/Results)
-        # Parsed Fields + Results live in the CENTER card to avoid inflating
-        # the configTabs height for Hash/Crypto tabs.
-        # ----------------------------------------------------------------
-        kfPanel = JPanel(GridBagLayout())
-        kfPanel.setBorder(EmptyBorder(4, 5, 4, 5))
 
-        kgbc = GridBagConstraints()
-        kgbc.insets = Insets(2, 3, 2, 3)
-        kgbc.anchor = GridBagConstraints.WEST
-
-        # Row 0: Extra Fields (N-06: CompactCustomDataPanel replaces free-text JTextArea)
-        kgbc.gridy = 0; kgbc.gridx = 0; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
-        kgbc.anchor = GridBagConstraints.NORTHWEST
-        kfPanel.add(JLabel("Extra Fields:"), kgbc)
-        kgbc.gridx = 1; kgbc.gridwidth = 2; kgbc.weightx = 1.0; kgbc.fill = GridBagConstraints.HORIZONTAL
-        kgbc.anchor = GridBagConstraints.WEST
-        self._inlineKfAdditionalPanel = CompactCustomDataPanel()
-        self._inlineKfAdditionalPanel._rows[0][0].setText("token")  # default key = token
-        self._inlineKfAdditionalPanel.setToolTipText("Extra fields not in body, e.g. token: <value>")
-        kfPanel.add(self._inlineKfAdditionalPanel, kgbc)
-        kgbc.gridwidth = 1
-
-        # Row 1: Known String
-        kgbc.gridy = 1; kgbc.gridx = 0; kgbc.weightx = 0; kgbc.fill = GridBagConstraints.NONE
-        kgbc.anchor = GridBagConstraints.WEST
-        kfPanel.add(JLabel("Known String:"), kgbc)
-        kgbc.gridx = 1; kgbc.gridwidth = 2; kgbc.weightx = 1.0; kgbc.fill = GridBagConstraints.HORIZONTAL
-        self._inlineKfKnownArea = JTextField()
-        kfPanel.add(self._inlineKfKnownArea, kgbc)
-        kgbc.gridwidth = 1
-
-        # Row 2: Find, Apply & Save Endpoint buttons
-        kgbc.gridy = 2; kgbc.gridx = 0; kgbc.gridwidth = 3; kgbc.weightx = 1.0
-        kgbc.fill = GridBagConstraints.HORIZONTAL; kgbc.anchor = GridBagConstraints.WEST
-        btnRow = JPanel(GridLayout(1, 3, 4, 0))
-        inlineFindBtn = JButton("Find Key Order", actionPerformed=self._onInlineKfFind)
-        self._inlineKfApplyBtn = JButton("Apply to Hash Tab", actionPerformed=self._onInlineApplyResult)
-        self._inlineKfApplyBtn.setEnabled(False)
-        inlineSaveBtn = JButton("Save Endpoint", actionPerformed=self._onInlineSaveSetting)
-        btnRow.add(inlineFindBtn)
-        btnRow.add(self._inlineKfApplyBtn)
-        btnRow.add(inlineSaveBtn)
-        kfPanel.add(btnRow, kgbc)
 
         # ----------------------------------------------------------------
         # AppSetting sub-tab panel
@@ -333,11 +292,9 @@ class HashGenEditorTab(IMessageEditorTab):
 
         self._hashConfigPanel = hashConfigPanel
         self._cryptoConfigPanel = cryptoConfigPanel
-        self._kfPanel = kfPanel
         self._appSettingTabPanel = appSettingTabPanel
 
         self._configTabs = configTabs
-        configTabs.setPreferredSize(Dimension(0, 165))
         self._panel.add(configTabs, BorderLayout.NORTH)
         self.update_tab_visibility()
 
@@ -367,17 +324,18 @@ class HashGenEditorTab(IMessageEditorTab):
         outputWrap = JPanel(BorderLayout(0, 2))
         outputWrap.setMinimumSize(Dimension(0, 40))
 
+        # Keep the original Hash/Crypto output intact inside the first output tab.
+        hashOutputPanel = JPanel(BorderLayout(0, 2))
+
         # Header row: label on left, checkbox on right
         outputHeader = JPanel(FlowLayout(FlowLayout.LEFT, 10, 0))
-        self._outputLabel = JLabel("Hash Output: ")
-        outputHeader.add(self._outputLabel)
         self._autoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
         self._autoEncryptChk.setToolTipText(
             "When checked: editing the decrypted text automatically re-encrypts it back into the request body"
         )
         self._autoEncryptChk.setVisible(False)  # hidden until Crypto tab is selected
         outputHeader.add(self._autoEncryptChk)
-        outputWrap.add(outputHeader, BorderLayout.NORTH)
+        hashOutputPanel.add(outputHeader, BorderLayout.NORTH)
 
         self._hashOutput = JTextArea(2, 60)
         self._hashOutput.setFont(Font("Monospaced", Font.PLAIN, 12))
@@ -387,13 +345,19 @@ class HashGenEditorTab(IMessageEditorTab):
         outputScroll = JScrollPane(self._hashOutput)
         outputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
         outputScroll.setPreferredSize(Dimension(0, 46))
-        outputWrap.add(outputScroll, BorderLayout.CENTER)
+        hashOutputPanel.add(outputScroll, BorderLayout.CENTER)
 
-        # Footer row: Get Timestamp button below the output box
-        outputFooter = JPanel(FlowLayout(FlowLayout.LEFT, 0, 2))
-        inlineTsBtn = JButton("Get Timestamp", actionPerformed=self._onInlineGetTimestamp)
-        outputFooter.add(inlineTsBtn)
-        outputWrap.add(outputFooter, BorderLayout.SOUTH)
+        # Restore the original styled Key Finder result component.
+        self._inlineKfResultArea = _WrapPane()
+        self._inlineKfResultArea.setFont(Font("Monospaced", Font.PLAIN, _MONO_FONT_SIZE))
+        self._inlineKfResultArea.setEditable(False)
+        kfOutputScroll = JScrollPane(self._inlineKfResultArea)
+        kfOutputScroll.setBorder(RoundedBorder(8, Color(180, 180, 180)))
+
+        self._outputTabs = JTabbedPane(JTabbedPane.TOP)
+        self._outputTabs.addTab("Hash Output", hashOutputPanel)
+        self._outputTabs.addTab("Key Finder", kfOutputScroll)
+        outputWrap.add(self._outputTabs, BorderLayout.CENTER)
 
         # ---- Debounce timer for auto-encrypt (fires 800 ms after last keystroke) ----
         self._cryptoAutoMode = False
@@ -438,6 +402,7 @@ class HashGenEditorTab(IMessageEditorTab):
             def changedUpdate(self, e): pass
             def _trig(self):
                 if not _outerRef2._bodyLoadingProgrammatically:
+                    _outerRef2._setHashStatus("")
                     _outerRef2._autoHashTimer.restart()
         self._bodyArea.getDocument().addDocumentListener(_BodyDocListener())
         self._bodyLoadingProgrammatically = False
@@ -446,29 +411,8 @@ class HashGenEditorTab(IMessageEditorTab):
         hcSplit.setResizeWeight(0.92)
         hashCryptoCard.add(hcSplit, BorderLayout.CENTER)
 
-        # ---- Card 2: Key Finder - Parsed Fields + Results ----
-        kfCard = JPanel(BorderLayout(0, 4))
 
-        parsedWrap = JPanel(BorderLayout(0, 2))
-        parsedWrap.add(JLabel("Parsed Fields (key: value):"), BorderLayout.NORTH)
-        self._inlineKfParsedArea = JTextArea(8, 30)
-        self._inlineKfParsedArea.setFont(Font("Monospaced", Font.PLAIN, _MONO_FONT_SIZE))
-        self._inlineKfParsedArea.setEditable(True)
-        self._inlineKfParsedArea.setLineWrap(True)
-        parsedWrap.add(JScrollPane(self._inlineKfParsedArea), BorderLayout.CENTER)
-
-        resultsWrap = JPanel(BorderLayout(0, 2))
-        resultsWrap.add(JLabel("Results:"), BorderLayout.NORTH)
-        self._inlineKfResultArea = _WrapPane()
-        self._inlineKfResultArea.setFont(Font("Monospaced", Font.PLAIN, _MONO_FONT_SIZE))
-        self._inlineKfResultArea.setEditable(False)
-        resultsWrap.add(JScrollPane(self._inlineKfResultArea), BorderLayout.CENTER)
-
-        kfSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, parsedWrap, resultsWrap)
-        kfSplit.setResizeWeight(0.4)
-        kfCard.add(kfSplit, BorderLayout.CENTER)
-
-        # ---- Card 3: AppSetting info - shows saved config for current setting ----
+        # ---- Card 2: AppSetting info - shows saved config for current setting ----
         settingCard = JPanel(BorderLayout(0, 6))
         settingCard.setBorder(EmptyBorder(6, 6, 6, 6))
         self._settingInfoArea = JTextArea()
@@ -479,7 +423,6 @@ class HashGenEditorTab(IMessageEditorTab):
         settingCard.add(JScrollPane(self._settingInfoArea), BorderLayout.CENTER)
 
         centerPanel.add(hashCryptoCard, "hashcrypto")
-        centerPanel.add(kfCard,         "keyfinder")
         centerPanel.add(settingCard,    "setting")
         self._panel.add(centerPanel, BorderLayout.CENTER)
 
@@ -493,17 +436,7 @@ class HashGenEditorTab(IMessageEditorTab):
                     if idx < 0:
                         return
                     title = str(_outer._configTabs.getTitleAt(idx))
-                    if title == "Key Finder":
-                        _outer._outputLabel.setText("Hash Output: ")
-                        _outer._autoEncryptChk.setVisible(False)
-                        _outer._cryptoAutoMode = False
-                        _outer._cryptoDebounceTimer.stop()
-                        _outer._hashOutput.setEditable(False)
-                        _outer._hashOutput.setText(_outer._lastHashText)
-                        _outer._cardLayout.show(centerPanel, "keyfinder")
-                        _outer._onInlineKfParse()
-                    elif title == "AppSetting":
-                        _outer._outputLabel.setText("Hash Output: ")
+                    if title == "AppSetting":
                         _outer._autoEncryptChk.setVisible(False)
                         _outer._cryptoAutoMode = False
                         _outer._cryptoDebounceTimer.stop()
@@ -514,7 +447,8 @@ class HashGenEditorTab(IMessageEditorTab):
                     else:
                         _outer._cardLayout.show(centerPanel, "hashcrypto")
                         if title == "Crypto":
-                            _outer._outputLabel.setText("Crypto Output: ")
+                            _outer._outputTabs.setTitleAt(0, "Crypto Output")
+                            _outer._outputTabs.setSelectedIndex(0)
                             _outer._autoEncryptChk.setVisible(True)
                             _outer._onAutoDecrypt()
                         else:  # Hash tab
@@ -523,11 +457,12 @@ class HashGenEditorTab(IMessageEditorTab):
                             except Exception:
                                 mode = "Hash"
                             if mode == "Crypto":
-                                _outer._outputLabel.setText("Crypto Output: ")
+                                _outer._outputTabs.setTitleAt(0, "Crypto Output")
+                                _outer._outputTabs.setSelectedIndex(0)
                                 _outer._autoEncryptChk.setVisible(True)
                                 _outer._onAutoDecrypt()
                             else:
-                                _outer._outputLabel.setText("Hash Output: ")
+                                _outer._outputTabs.setTitleAt(0, "Hash Output")
                                 _outer._autoEncryptChk.setVisible(False)
                                 _outer._cryptoAutoMode = False
                                 _outer._cryptoDebounceTimer.stop()
@@ -557,7 +492,7 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._customDataPanel.setPairs(main_pairs)
             mainKeys = ext._keysOrderField.getText().strip()
             if mainKeys and not self._keysUserEdited:
-                self._keysField.setText(mainKeys)
+                self._setKeysField(mainKeys, False)
             mainHashField = ext._mainHashFieldName.getText().strip()
             if mainHashField:
                 self._hashFieldName.setText(mainHashField)
@@ -584,30 +519,39 @@ class HashGenEditorTab(IMessageEditorTab):
             print("[CipherKit] Sync error: %s" % str(e))
 
     def _tryLoadAppSetting(self):
-        """Try to auto-load an app setting matching the current request URL path.
+        """Try to auto-load an app setting matching the current request URL path or fall back to default app setting.
         Returns True if a setting was loaded, False otherwise."""
         try:
             path = getattr(self, '_requestPath', '')
-            if not path:
-                return False
-            app_name, app, pattern, ep = self._extender.app_setting_manager.find_by_url(path)
+            app_name = None
+            app = None
+            pattern = None
+            ep = None
+            default_name = self._extender.ext_settings.get("default_app", "(none)")
+            app_name, app, pattern, ep = (
+                self._extender.app_setting_manager.resolve_for_url(path, default_name)
+            )
+
             if not app:
                 return False
+
             self._applyAppSettingToInlineUI(app, ep)
             # Update AppSetting tab UI
             try:
                 self._inlineSettingCombo.setSelectedItem(app_name)
                 if hasattr(self, '_inlineSettingStatus'):
-                    self._inlineSettingStatus.setText("Auto-loaded: %s / %s" % (app_name, pattern))
-                self._inlineUrlLabel.setText(getattr(self, '_requestPath', ''))
+                    self._inlineSettingStatus.setText("Loaded: %s%s" % (app_name, (" / " + pattern) if pattern else ""))
+                self._inlineUrlLabel.setText(path)
                 if ep:
                     self._inlineEpKeysField.setText(ep.get("keys_order", ""))
+                else:
+                    self._inlineEpKeysField.setText("")
             except Exception:
                 pass
-            print("[CipherKit] Auto-loaded app setting: %s / %s" % (app_name, pattern))
+            print("[CipherKit] Loaded app setting: %s / %s" % (app_name, pattern))
             return True
         except Exception as e:
-            print("[CipherKit] AppSetting auto-load error: %s" % str(e))
+            print("[CipherKit] AppSetting load error: %s" % str(e))
             return False
 
     def _applyAppSettingToInlineUI(self, app, ep=None):
@@ -635,6 +579,12 @@ class HashGenEditorTab(IMessageEditorTab):
                 else:
                     merged_data[k] = v
             self._customDataPanel.setPairs(merged_data)
+        # Handle default kf key if custom data is empty or only has empty keys
+        kf_key = app.get("default_kf_key")
+        if kf_key:
+            current_keys = [k for k in self._customDataPanel.getKeys() if k]
+            if not current_keys:
+                self._customDataPanel.setPairs({kf_key: ""})
         if "hash_field" in app:
             self._hashFieldName.setText(app["hash_field"])
         c = app.get("crypto", {})
@@ -648,12 +598,21 @@ class HashGenEditorTab(IMessageEditorTab):
             self._inlineCryptoField.setText(c["field"])
         # mode is managed automatically — do not set here
         if ep and "keys_order" in ep:
-            self._keysField.setText(ep["keys_order"])
-            self._keysUserEdited = True
+            self._setKeysField(ep["keys_order"], False)
 
     def _onKeysManualEdit(self):
         """Mark that the user has manually edited the keys order field."""
-        self._keysUserEdited = True
+        if not self._keysLoadingProgrammatically:
+            self._keysUserEdited = True
+
+    def _setKeysField(self, value, user_edited=False):
+        """Update Sign Order without firing the manual-edit state accidentally."""
+        self._keysLoadingProgrammatically = True
+        try:
+            self._keysField.setText(value or "")
+        finally:
+            self._keysLoadingProgrammatically = False
+            self._keysUserEdited = bool(user_edited)
 
     def _updateInlinePasscodeState(self):
         """Dim/enable the Secret field based on the selected algo's requires_key flag."""
@@ -677,142 +636,150 @@ class HashGenEditorTab(IMessageEditorTab):
         except Exception:
             pass
 
-    def _onInlineKfParse(self, event=None):
-        """Parse the body textarea into the inline Key Finder parsed fields."""
-        from collections import OrderedDict
-        body = self._bodyArea.getText().strip()
-        fmt  = "Auto-Detect"
+    def _setKfStatus(self, text, state="normal"):
+        """Show Key Finder state only in its restored result tab."""
+        self._setKfResultStyled(_safe_text(text) if text else u"")
+        self._outputTabs.setSelectedIndex(1)
+
+    def _setHashStatus(self, state):
         try:
-            if fmt == "JSON":
-                ct = "application/json"
-            elif fmt == "Form Data":
-                ct = "application/x-www-form-urlencoded"
-            elif fmt == "Multipart":
-                ct = "multipart/form-data"
-            else:
-                ct = ""  # Auto-Detect
-            
-            data = parse_body(body, ct)
-            pairs = flatten_data(data)
-            if not pairs:
-                self._inlineKfParsedArea.setText("(no fields found)")
-                return
-            self._inlineKfParsedArea.setText("\n".join("%s: %s" % (k, v) for k, v in pairs.items()))
-        except Exception as e:
-            self._inlineKfParsedArea.setText("Parse error: %s" % str(e))
+            current_title = str(self._outputTabs.getTitleAt(0))
+            if state in ("valid", "invalid", "missing"):
+                self._outputTabs.setTitleAt(0, "Hash Output")
+                formatted = format_hash_comparison(self._hashOutput.getText(), state)
+                self._hashOutput.setText(formatted)
+                self._lastHashText = formatted
+            elif not current_title.startswith("Crypto Output"):
+                self._outputTabs.setTitleAt(0, "Hash Output")
+                plain_hash = strip_hash_comparison(self._hashOutput.getText())
+                self._hashOutput.setText(plain_hash)
+                self._lastHashText = plain_hash
+        except Exception:
+            pass
 
     def _onInlineKfFind(self, event=None):
-        """Find key order from inline Key Finder fields using DFS backtracking."""
+        """Find key order off the Swing event thread and apply the selected match."""
         try:
             from collections import OrderedDict
-            known = str(self._inlineKfKnownArea.getText().strip())
+            known = _safe_text(self._inlineKfKnownArea.getText().strip())
             if not known:
-                self._setKfResultStyled("Please enter the known concatenated string.")
+                self._setKfStatus("Enter a known string", "error")
                 return
 
+            self._autoHashTimer.stop()
+
+            # Parse body directly (auto-detect format)
+            body = self._bodyArea.getText().strip()
             pairs = OrderedDict()
-            # Parsed fields
-            for line in self._inlineKfParsedArea.getText().strip().splitlines():
-                line = line.strip()
-                if ":" in line:
-                    k, _, v = line.partition(":")
-                    pairs[k.strip()] = v.strip()
-            # Extra Fields panel (CompactCustomDataPanel)
-            for k, v in self._inlineKfAdditionalPanel.getPairs().items():
+            try:
+                data = parse_body(body, "")  # empty string = auto-detect
+                pairs.update(flatten_data(data))
+            except Exception:
+                pass
+
+            # Merge Custom Data panel fields (token, etc.) — these override body fields
+            for k, v in self._customDataPanel.getPairs().items():
                 if k:
                     pairs[k] = v
 
             if not pairs:
-                self._setKfResultStyled("No fields found. Click Parse Body first.")
+                self._setKfStatus("No fields found", "error")
                 return
 
             # ---- Auto-detect trailing 64-char extra field ----
-            _TOKEN_LEN = self._extender.ext_settings.get("default_token_length", 64)
+            _TOKEN_LEN = 64
             _auto_detect_note = ""
-            if self._inlineKfAdditionalPanel._rows:
-                first_key = self._inlineKfAdditionalPanel._rows[0][0].getText().strip()
-                first_val = self._inlineKfAdditionalPanel._rows[0][1].getText().strip()
+            app_name = str(self._inlineSettingCombo.getSelectedItem()).strip().lower()
+            if app_name == "aba mobile" and self._customDataPanel._rows:
+                # If first row key is empty, default it to "token" for auto-detection
+                if not self._customDataPanel._rows[0][0].getText().strip():
+                    self._customDataPanel._rows[0][0].setText("token")
+
+                first_key = self._customDataPanel._rows[0][0].getText().strip()
+                first_val = self._customDataPanel._rows[0][1].getText().strip()
                 # Only auto-detect if the first row (token) has a key but NO value
                 if first_key and not first_val and len(known) > _TOKEN_LEN:
                     token_val = known[-_TOKEN_LEN:]
                     pairs[first_key] = token_val
                     _auto_detect_note = "[Auto-detect] %s : %s" % (first_key, token_val)
-                    # Populate the auto-detected token back to the UI row
-                    self._inlineKfAdditionalPanel._rows[0][1].setText(token_val)
+                    # Populate the auto-detected token back to the Custom Data panel
+                    self._customDataPanel._rows[0][1].setText(token_val)
 
-            # Backtracking DFS search
-            matches = []
-            total_visited = [0]
-            values = {k: str(v) for k, v in pairs.items()}
-            
-            def dfs(current_perm, remaining_keys, remaining_known):
-                total_visited[0] += 1
-                if len(matches) >= 100 or total_visited[0] >= 10000:
-                    return
-                if not remaining_known:
-                    if current_perm:
-                        matches.append(current_perm)
-                    return
-                for k in remaining_keys:
-                    val = values[k]
-                    if not val:
-                        continue
-                    if remaining_known.startswith(val):
-                        next_keys = [x for x in remaining_keys if x != k]
-                        dfs(current_perm + (k,), next_keys, remaining_known[len(val):])
-            
-            dfs((), list(pairs.keys()), known)
+            self._inlineKfFindBtn.setEnabled(False)
+            try:
+                keys = list(pairs.keys())
+                values = dict((k, _safe_text(v)) for k, v in pairs.items())
+                matches = []
+                total_visited = [0]
 
-            if not matches:
-                lines = []
-                if _auto_detect_note:
-                    lines.append(_auto_detect_note)
-                lines += ["No match found.", ""]
-                # Show which field values appear in the known string
-                found_keys = [(k, v) for k, v in pairs.items() if v and str(v) in known]
-                if found_keys:
-                    lines.append("Values found in known string:")
-                    for k, v in found_keys:
-                        lines.append("  %s : %s" % (k, v))
-                    lines.append("")
-                # Find segments in the known string not covered by any field value
-                remaining = known
-                for _, v in found_keys:
-                    remaining = remaining.replace(str(v), "\x00", 1)
-                unknown_parts = [p for p in remaining.split("\x00") if p]
-                if unknown_parts:
-                    lines.append("Unknown segment(s) not from any field:")
-                    for part in unknown_parts:
-                        lines.append("  %s" % part)
-                self._setKfResultStyled("\n".join(lines))
-                self._lastKfMatches = []
-                self._inlineKfApplyBtn.setEnabled(False)
-            else:
+                def dfs(current_perm, remaining_keys, remaining_known):
+                    total_visited[0] += 1
+                    if len(matches) >= 100 or total_visited[0] >= 10000:
+                        return
+                    if not remaining_known:
+                        if current_perm:
+                            matches.append(current_perm)
+                        return
+                    for key in remaining_keys:
+                        value = values[key]
+                        if not value:
+                            continue
+                        if remaining_known.startswith(value):
+                            next_keys = [candidate for candidate in remaining_keys if candidate != key]
+                            dfs(current_perm + (key,), next_keys, remaining_known[len(value):])
+
+                dfs((), keys, known)
+                self._lastKfMatches = matches
+
                 lines = []
                 if _auto_detect_note:
                     lines.append(_auto_detect_note)
                     lines.append(u"\u2500" * 52)
-                for i, perm in enumerate(matches, 1):
-                    if len(matches) > 1:
-                        lines.append("Match #%d:" % i)
-                    lines.append("Key order : %s" % ", ".join(perm))
-                    if i < len(matches):
+
+                if not matches:
+                    lines += ["No match found.", ""]
+                    found_keys = [(k, v) for k, v in pairs.items()
+                                  if v and _safe_text(v) in known]
+                    if found_keys:
+                        lines.append("Values found in known string:")
+                        for key, value in found_keys:
+                            lines.append(u"  %s : %s" % (_safe_text(key), _safe_text(value)))
                         lines.append("")
-                if len(matches) >= 100 or total_visited[0] >= 10000:
+                    remaining = known
+                    for _, value in found_keys:
+                        remaining = remaining.replace(_safe_text(value), u"\x00", 1)
+                    unknown_parts = [part for part in remaining.split("\x00") if part]
+                    if unknown_parts:
+                        lines.append("Unknown segment(s) not from any field:")
+                        for part in unknown_parts:
+                            lines.append(u"  %s" % _safe_text(part))
+                    self._setKfStatus(u"\n".join([_safe_text(line) for line in lines]), "error")
+                    return
+
+                for index, match in enumerate(matches, 1):
+                    if len(matches) > 1:
+                        lines.append("Match #%d:" % index)
+                    order_text = u", ".join([_safe_text(key) for key in match])
+                    lines.append(u"Key order : %s" % order_text)
+                    if index < len(matches):
+                        lines.append("")
+                capped = len(matches) >= 100 or total_visited[0] >= 10000
+                if capped:
                     lines.append("")
                     lines.append("(Note: search was capped at 100 matches to optimize performance)")
-                self._setKfResultStyled("\n".join(lines))
-                self._lastKfMatches = matches
-                self._inlineKfApplyBtn.setEnabled(True)
+                self._setKfStatus(u"\n".join([_safe_text(line) for line in lines]), "found")
+                self._onInlineApplyResult(_auto_detect_note, capped)
+            finally:
+                self._inlineKfFindBtn.setEnabled(True)
 
         except Exception as e:
             self._lastKfMatches = []
-            self._inlineKfApplyBtn.setEnabled(False)
-            self._setKfResultStyled("Error: %s\n%s" % (str(e), traceback.format_exc()))
+            self._inlineKfFindBtn.setEnabled(True)
+            self._setKfStatus("Error: %s\n%s" % (str(e), traceback.format_exc()), "error")
+            print("[CipherKit] Key Finder error: %s\n%s" % (str(e), traceback.format_exc()))
 
     def _setKfResultStyled(self, text):
-        """Write text to the KF result JTextPane. Key order result lines are shown
-        in JSON-key blue without the 'Key order :' prefix."""
+        """Restore the legacy styled Key Finder result rendering."""
         from javax.swing.text import SimpleAttributeSet, StyleConstants
         doc = self._inlineKfResultArea.getStyledDocument()
         doc.remove(0, doc.getLength())
@@ -824,17 +791,17 @@ class HashGenEditorTab(IMessageEditorTab):
         StyleConstants.setFontFamily(highlight, "Monospaced")
         StyleConstants.setFontSize(highlight, _MONO_FONT_SIZE)
         StyleConstants.setForeground(highlight, Color(0, 85, 170))
-        for line in text.splitlines():
+        for line in _safe_text(text).splitlines():
             if line.startswith("Key order :"):
                 display = line[len("Key order :"):].strip()
                 doc.insertString(doc.getLength(), display + "\n", highlight)
             else:
                 doc.insertString(doc.getLength(), line + "\n", normal)
 
-    def _onInlineApplyResult(self, event=None):
+    def _onInlineApplyResult(self, note="", capped=False, event=None):
         """Apply the chosen Key Finder result to the Hash tab's fields."""
         if not self._lastKfMatches:
-            JOptionPane.showMessageDialog(self._panel, "No matches to apply. Please run Find Key Order first.", "Apply Result", JOptionPane.WARNING_MESSAGE)
+            self._setKfStatus("No match", "error")
             return
 
         selected_match = None
@@ -860,7 +827,8 @@ class HashGenEditorTab(IMessageEditorTab):
             if len(self._lastKfMatches) == 1:
                 selected_match = self._lastKfMatches[0]
             else:
-                options = [", ".join(m) for m in self._lastKfMatches]
+                options = [u", ".join([_safe_text(key) for key in match])
+                           for match in self._lastKfMatches]
                 selected = JOptionPane.showInputDialog(
                     self._panel,
                     "Multiple matches found. Select which key order to apply:",
@@ -879,40 +847,35 @@ class HashGenEditorTab(IMessageEditorTab):
 
         if selected_match:
             # 1. Update Sign Order field
-            self._keysField.setText(", ".join(selected_match))
-            self._keysUserEdited = True
-            
-            # 2. Merge Key Finder extra fields into Hash tab's custom data panel
-            hash_pairs = self._customDataPanel.getPairs()
-            kf_pairs = self._inlineKfAdditionalPanel.getPairs()
-            for k, v in kf_pairs.items():
-                if k:
-                    # ONLY add if the key exists in the selected key order result
-                    if k in selected_match:
-                        hash_pairs[k] = v
-            self._customDataPanel.setPairs(hash_pairs)
-            
+            self._setKeysField(
+                u", ".join([_safe_text(key) for key in selected_match]), True
+            )
+
+            # 2. No merge needed — Custom Data panel is shared with Key Finder
+            #    _customDataPanel already contains all extra fields (token, etc.)
+
             # 3. Switch view/focus to the Hash tab (index 0)
             self._configTabs.setSelectedIndex(0)
-            
-            # 4. Trigger auto-rehash immediately with the newly applied fields
+
+            # 4. Trigger one hash generation and compare it with the request hash.
             try:
+                self._outputTabs.setSelectedIndex(0)
                 self._shouldCompareHash = True
                 self._onGenerate()
             except Exception:
                 pass
+        else:
+            # Keep the full match list visible when selection is cancelled.
+            self._outputTabs.setSelectedIndex(1)
 
     def update_tab_visibility(self):
         show_crypto = self._extender.ext_settings.get("show_crypto", True)
-        show_kf = self._extender.ext_settings.get("show_key_finder", True)
         show_as = self._extender.ext_settings.get("show_app_setting", True)
 
         self._configTabs.removeAll()
         self._configTabs.addTab("Hash", self._hashConfigPanel)
         if show_crypto:
             self._configTabs.addTab("Crypto", self._cryptoConfigPanel)
-        if show_kf:
-            self._configTabs.addTab("Key Finder", self._kfPanel)
         if show_as:
             self._configTabs.addTab("AppSetting", self._appSettingTabPanel)
 
@@ -927,7 +890,6 @@ class HashGenEditorTab(IMessageEditorTab):
 
     def _resetEditorState(self, content=None):
         self._currentMessage = content
-        self._headerBytes = None
         self._contentType = ""
         self._requestPath = ""
         self._bodyLoadingProgrammatically = True
@@ -935,6 +897,10 @@ class HashGenEditorTab(IMessageEditorTab):
         self._bodyLoadingProgrammatically = False
         self._hashOutput.setEditable(False)
         self._hashOutput.setText("")
+        self._setHashStatus("")
+        self._inlineKfResultArea.setText("")
+        self._outputTabs.setTitleAt(0, "Hash Output")
+        self._outputTabs.setSelectedIndex(0)
         self._cryptoAutoMode = False
         try:
             self._cryptoDebounceTimer.stop()
@@ -963,8 +929,6 @@ class HashGenEditorTab(IMessageEditorTab):
             analyzed = self._helpers.analyzeRequest(content)
             bodyOffset = analyzed.getBodyOffset()
 
-            self._headerBytes = content[:bodyOffset]
-
             # Extract Content-Type from headers for body parsing
             self._contentType = ""
             for h in analyzed.getHeaders():
@@ -979,6 +943,9 @@ class HashGenEditorTab(IMessageEditorTab):
             self._tryFormatJson()
             self._bodyArea.setCaretPosition(0)
             self._bodyLoadingProgrammatically = False
+
+            # Burp reuses editor instances; Sign Order edit state is request-scoped.
+            self._setKeysField("", False)
 
             # Extract URL path for app setting matching
             self._requestPath = _extract_request_path(analyzed)
@@ -1001,8 +968,6 @@ class HashGenEditorTab(IMessageEditorTab):
                 idx = self._configTabs.getSelectedIndex()
                 if idx == 1:
                     self._onAutoDecrypt()
-                elif idx == 2:
-                    self._onInlineKfParse()
                 else:
                     self._onGenerate()
             except Exception:
@@ -1052,16 +1017,27 @@ class HashGenEditorTab(IMessageEditorTab):
     # --- Actions ---
 
     def _onGenerate(self, event=None):
+        compare_requested = bool(getattr(self, '_shouldCompareHash', False))
         result, debug_log = self._computeHash()
         try:
             crypto_output_mode = str(self._extender._activeOutputCombo.getSelectedItem()) == "Crypto"
         except Exception:
             crypto_output_mode = False
-        self._shouldCompareHash = False
-        if not crypto_output_mode:
+        if should_render_hash_output(compare_requested, crypto_output_mode):
             text = str(result)
             self._lastHashText = text
             self._hashOutput.setText(text)
+        try:
+            if compare_requested:
+                body_str = self._bodyArea.getText().strip()
+                payload = parse_body(body_str, getattr(self, '_contentType', ''))
+                comparable_payload = flatten_data(payload) if isinstance(payload, dict) else payload
+                hash_field = self._hashFieldName.getText().strip() or "hash"
+                self._setHashStatus(compare_generated_hash(result, comparable_payload, hash_field))
+            else:
+                self._setHashStatus("")
+        finally:
+            self._shouldCompareHash = False
 
     def _onGenerateAndInject(self, event=None):
         result, debug_log = self._computeHash()
@@ -1141,15 +1117,8 @@ class HashGenEditorTab(IMessageEditorTab):
         # Determine which custom data panel to read from based on the active tab
         idx = self._configTabs.getSelectedIndex()
         active_title = str(self._configTabs.getTitleAt(idx)) if idx >= 0 else ""
-        if active_title == "Key Finder":
-            resolved_custom_data = self._inlineKfAdditionalPanel.getPairs()
-            # Sync to Hash tab panel immediately for consistency
-            try:
-                self._customDataPanel.setPairs(resolved_custom_data)
-            except Exception:
-                pass
-        else:
-            resolved_custom_data = self._customDataPanel.getPairs()
+        # Always use the unified Custom Data panel (Key Finder and Hash tab share the same panel)
+        resolved_custom_data = self._customDataPanel.getPairs()
 
         # Save app-level config (algorithm, secret, crypto - shared across endpoints)
         app_data = {
@@ -1378,6 +1347,8 @@ class HashGenEditorTab(IMessageEditorTab):
     def _onCryptoRun(self, event=None):
         """Run AES-CBC encrypt/decrypt on the named body field and show result."""
         try:
+            self._outputTabs.setTitleAt(0, "Crypto Output")
+            self._outputTabs.setSelectedIndex(0)
             result = self._computeCrypto()
             self._hashOutput.setText("[CRYPTO] " + str(result))
         except Exception as e:
@@ -1388,6 +1359,8 @@ class HashGenEditorTab(IMessageEditorTab):
         Silently clears the output and does nothing when required params are missing."""
         self._cryptoAutoMode = False
         self._cryptoDebounceTimer.stop()
+        self._outputTabs.setTitleAt(0, "Crypto Output")
+        self._outputTabs.setSelectedIndex(0)
         # Always force Decrypt — mode is managed automatically, never set externally
         self._inlineCryptoMode.setSelectedItem("Decrypt")
         # Silently skip if required parameters are not yet filled in
@@ -1539,8 +1512,7 @@ class HashGenEditorTab(IMessageEditorTab):
                 new_keys_str = ", ".join(keys)
                 current = self._keysField.getText().strip()
                 if current != new_keys_str:
-                    self._keysUserEdited = False
-                    self._keysField.setText(new_keys_str)
+                    self._setKeysField(new_keys_str, False)
         except:
             pass
 

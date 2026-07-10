@@ -1,21 +1,29 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
 
-def _safe_encode(value):
-    """Return a UTF-8 bytes object from str or bytes, handling non-ASCII safely."""
-    if isinstance(value, bytes):
+def _safe_text(value):
+    """Return Unicode text without Jython's implicit ASCII conversion."""
+    try:
+        text_type = unicode
+    except NameError:
+        text_type = str
+
+    if isinstance(value, text_type):
         return value
-    if not isinstance(value, str):
-        value = str(value)
-    return value.encode('utf-8')
+    if isinstance(value, bytes):
+        try:
+            return value.decode('utf-8')
+        except Exception:
+            return value.decode('utf-8', 'replace')
+    try:
+        return text_type(value)
+    except Exception:
+        return text_type(str(value), 'utf-8', 'replace')
 
 # =============================================================================
 # Constants
 # =============================================================================
 _DEBOUNCE_MS      = 800   # ms delay before auto-encrypt fires
-_MAX_KF_FIELDS    = 10    # max fields for key finder brute-force
-_DEFAULT_DIVIDER  = 320   # default split pane divider position
 _MONO_FONT_SIZE   = 12    # monospaced font size for all text areas
 
 

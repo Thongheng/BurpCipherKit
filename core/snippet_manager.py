@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
-
-from core.utils import _safe_encode
+import json, os
 
 class SnippetManager(object):
     def __init__(self, filepath):
@@ -34,18 +32,6 @@ class SnippetManager(object):
 
     def get_all_names(self):
         return list(self.snippets.keys())
-
-    def update_snippet(self, name, code, description=""):
-        self.snippets[name] = {
-            "code": code,
-            "description": description
-        }
-        self.save_snippets()
-
-    def delete_snippet(self, name):
-        if name in self.snippets:
-            del self.snippets[name]
-            self.save_snippets()
 
     def create_default_snippets(self):
         default_code = (
@@ -80,7 +66,6 @@ class SnippetManager(object):
             "    message = iv + concat_str\n"
             "\n"
             "    # 5. Sign\n"
-            "    # _safe_encode wraps non-ASCII key/message (Improvement-7)\n"
             "    signature = hmac.new(\n"
             "        key.encode('utf-8') if isinstance(key, str) else key,\n"
             "        message.encode('utf-8') if isinstance(message, str) else message,\n"

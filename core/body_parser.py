@@ -1,8 +1,31 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
+import json, re
 
-from core.utils import _safe_encode
+
+def _url_decode(value):
+    try:
+        from java.net import URLDecoder
+        return URLDecoder.decode(value, "UTF-8")
+    except Exception:
+        try:
+            from urllib import unquote_plus
+        except ImportError:
+            from urllib.parse import unquote_plus
+        return unquote_plus(value)
+
+
+def _url_encode(value):
+    value = str(value)
+    try:
+        from java.net import URLEncoder
+        return URLEncoder.encode(value, "UTF-8")
+    except Exception:
+        try:
+            from urllib import quote_plus
+        except ImportError:
+            from urllib.parse import quote_plus
+        return quote_plus(value)
 
 def _get_boundary(content_type):
     """Extract the multipart boundary from a Content-Type header value."""
@@ -52,19 +75,12 @@ def _try_parse_urlencoded(body_str):
                 k, v = pair.split("=", 1)
             else:
                 k, v = pair, ""
-            # Full URL decode (Bug-3): use Java URLDecoder, fall back to urllib
             try:
-                from java.net import URLDecoder
-                k = URLDecoder.decode(k, "UTF-8")
-                v = URLDecoder.decode(v, "UTF-8")
+                k = _url_decode(k)
+                v = _url_decode(v)
             except Exception:
-                try:
-                    import urllib
-                    k = urllib.unquote_plus(k)
-                    v = urllib.unquote_plus(v)
-                except Exception:
-                    k = k.replace("+", " ")
-                    v = v.replace("+", " ")
+                k = k.replace("+", " ")
+                v = v.replace("+", " ")
             if k:
                 result[k] = v
         # Only return if we found key=value pairs (not a JSON-looking string)
@@ -193,10 +209,29 @@ def serialize_body(updated_data, original_body, content_type=""):
 
     if ct == "application/x-www-form-urlencoded":
         try:
-            return "&".join(
-                "{}={}".format(str(k), str(v))
-                for k, v in updated_data.items()
+            original_data = _try_parse_urlencoded(original_body) or {}
+            changed = set(
+                key for key, value in updated_data.items()
+                if key not in original_data or str(original_data.get(key)) != str(value)
             )
+            emitted = set()
+            parts = []
+            for raw_pair in original_body.split("&"):
+                raw_key = raw_pair.split("=", 1)[0]
+                key = _url_decode(raw_key)
+                if key in changed:
+                    if key not in emitted:
+                        parts.append("%s=%s" % (
+                            _url_encode(key), _url_encode(updated_data[key])
+                        ))
+                        emitted.add(key)
+                else:
+                    parts.append(raw_pair)
+                    emitted.add(key)
+            for key, value in updated_data.items():
+                if key not in emitted:
+                    parts.append("%s=%s" % (_url_encode(key), _url_encode(value)))
+            return "&".join(parts)
         except:
             pass
 
@@ -207,15 +242,53 @@ def serialize_body(updated_data, original_body, content_type=""):
             boundary = _auto_detect_boundary(original_body)
         if boundary:
             try:
-                parts = []
-                for k, v in updated_data.items():
-                    parts.append("--" + boundary)
-                    parts.append('Content-Disposition: form-data; name="{}"'.format(k))
-                    parts.append("")
-                    parts.append(str(v))
-                parts.append("--" + boundary + "--")
-                parts.append("")
-                return "\r\n".join(parts)
+                delimiter = "--" + boundary
+                segments = original_body.split(delimiter)
+                original_data = _try_parse_multipart(original_body, content_type) or {}
+                changed = set(
+                    key for key, value in updated_data.items()
+                    if key not in original_data or str(original_data.get(key)) != str(value)
+                )
+                seen = set()
+                output_segments = [segments[0]]
+                closing_segment = None
+
+                for segment in segments[1:]:
+                    if segment.startswith("--"):
+                        closing_segment = segment
+                        break
+
+                    separator = "\r\n\r\n" if "\r\n\r\n" in segment else "\n\n"
+                    if separator not in segment:
+                        output_segments.append(segment)
+                        continue
+                    headers, body_with_suffix = segment.split(separator, 1)
+                    match = re.search(r'name=(?:"([^"]*)"|([^;\r\n]+))', headers, re.I)
+                    if not match:
+                        output_segments.append(segment)
+                        continue
+                    name = match.group(1) if match.group(1) is not None else match.group(2).strip()
+                    seen.add(name)
+
+                    # Never rewrite file parts; preserving their bytes and metadata is safer.
+                    is_file = re.search(r'filename=', headers, re.I) is not None
+                    if name in changed and not is_file:
+                        line_end = "\r\n" if body_with_suffix.endswith("\r\n") else "\n"
+                        output_segments.append(
+                            headers + separator + str(updated_data[name]) + line_end
+                        )
+                    else:
+                        output_segments.append(segment)
+
+                line_end = "\r\n" if "\r\n" in original_body else "\n"
+                for key, value in updated_data.items():
+                    if key not in seen:
+                        output_segments.append(
+                            line_end + 'Content-Disposition: form-data; name="%s"' % key
+                            + line_end + line_end + str(value) + line_end
+                        )
+                output_segments.append(closing_segment if closing_segment is not None else "--" + line_end)
+                return delimiter.join(output_segments)
             except:
                 pass
         else:
@@ -264,6 +337,12 @@ def flatten_data(data):
             
         # Primitive value
         val_str = str(val)
+        last_key = prefix.split('.')[-1] if prefix else ""
+        if last_key in ('amount', 'commission'):
+            try:
+                val_str = "{:.2f}".format(float(val))
+            except:
+                pass
         if prefix:
             pairs[prefix] = val_str
                     

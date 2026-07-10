@@ -1,17 +1,7 @@
 # -*- coding: utf-8 -*-
-from javax.swing import (
-    JPanel, JLabel, JTextField, JTextArea, JButton, JComboBox, JCheckBox,
-    JScrollPane, JTabbedPane, JSplitPane, JOptionPane, BorderFactory,
-    SwingUtilities, BoxLayout, Box
-)
-from javax.swing.border import EmptyBorder, TitledBorder, AbstractBorder
-from java.awt import (
-    BorderLayout, GridBagLayout, GridBagConstraints, Insets,
-    Font, Color, Dimension, FlowLayout, Component, GridLayout, RenderingHints
-)
-from java.awt.event import FocusAdapter, ActionListener
-from javax.swing.event import DocumentListener
-from javax.swing import Timer as _SwingTimer
+from javax.swing import BorderFactory
+from javax.swing.border import EmptyBorder, AbstractBorder
+from java.awt import Insets, Color, RenderingHints
 
 class RoundedBorder(AbstractBorder):
     """A rounded-corner border for JTextField / JScrollPane / JPanel."""

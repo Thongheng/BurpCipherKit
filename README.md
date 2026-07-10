@@ -40,7 +40,7 @@ Save sign-orders, custom data, and crypto keys mapped to URL patterns.
 ## 🐍 Writing Custom Snippets
 
 ### A. Custom Hash/Signature
-Save python snippets under **Hash Editor**. The script must define `generate(payload, passcode, custom_data=None, key_order=None)`.
+Add Python snippets to `snippets.json`. The script must define `generate(payload, passcode, custom_data=None, key_order=None)`.
 
 ```python
 def generate(payload, passcode, custom_data=None, key_order=None):
@@ -55,7 +55,7 @@ def generate(payload, passcode, custom_data=None, key_order=None):
 ```
 
 ### B. Custom Encryption/Decryption
-Save python snippets under **Crypto Editor**. Define `encrypt` and `decrypt` functions in the same snippet.
+Add snippets to `crypto_snippets.json`. Define `encrypt` and `decrypt` functions in the same snippet.
 
 ```python
 def encrypt(plaintext, key, iv):

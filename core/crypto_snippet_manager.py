@@ -1,10 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
-from javax.crypto import Cipher
-from javax.crypto.spec import SecretKeySpec, IvParameterSpec
-
-from core.utils import _safe_encode
+import json, os
 
 class CryptoSnippetManager(object):
     """
@@ -115,22 +111,6 @@ class CryptoSnippetManager(object):
     def get_all_names(self):
         return list(self.snippets.keys())
 
-    def update_snippet(self, name, encrypt_code, decrypt_code,
-                       description="", requires_key=True, requires_iv=True):
-        self.snippets[name] = {
-            "encrypt_code": encrypt_code,
-            "decrypt_code": decrypt_code,
-            "description": description,
-            "requires_key": requires_key,
-            "requires_iv": requires_iv
-        }
-        self.save_snippets()
-
-    def delete_snippet(self, name):
-        if name in self.snippets:
-            del self.snippets[name]
-            self.save_snippets()
-
     def requires_key(self, name):
         s = self.snippets.get(name, {})
         return s.get("requires_key", True)
@@ -138,5 +118,3 @@ class CryptoSnippetManager(object):
     def requires_iv(self, name):
         s = self.snippets.get(name, {})
         return s.get("requires_iv", True)
-
-

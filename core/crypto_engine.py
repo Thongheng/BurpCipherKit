@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os, sys, hashlib, hmac, base64, time, traceback, itertools
+import json, hashlib, hmac, base64, time, traceback
 from javax.crypto import Cipher
 from javax.crypto.spec import SecretKeySpec, IvParameterSpec
-
-from core.utils import _safe_encode
 
 class CryptoEngine(object):
     @staticmethod
