@@ -3,7 +3,7 @@ from __future__ import print_function
 import json, time, traceback
 from javax.swing import (
     JPanel, JLabel, JTextField, JTextArea, JTextPane, JButton, JComboBox, JCheckBox,
-    JScrollPane, JTabbedPane, JSplitPane, JOptionPane
+    JScrollPane, JTabbedPane, JSplitPane, JOptionPane, SwingUtilities
 )
 from javax.swing.border import EmptyBorder
 from java.awt import (
@@ -23,11 +23,12 @@ class _WrapPane(JTextPane):
         return True
 
 from core.body_parser import parse_body, serialize_body, flatten_data
+from core.app_setting_manager import mask_secret, merge_custom_data
 from core.crypto_engine import CryptoEngine, AesCbcEngine
 from core.crypto_snippet_engine import CryptoSnippetEngine
 from core.key_finder import (
     compare_generated_hash, format_hash_comparison,
-    should_render_hash_output, strip_hash_comparison,
+    should_render_hash_output, strip_hash_comparison, find_key_orders,
 )
 from ui.components.rounded_border import RoundedBorder
 from ui.components.custom_data_panel import CompactCustomDataPanel
@@ -218,7 +219,7 @@ class HashGenEditorTab(IMessageEditorTab):
         pgbc.insets = Insets(3, 4, 3, 4)
         pgbc.anchor = GridBagConstraints.WEST
 
-        # Row 0: App selector + Load + Delete
+        # Row 0: App selector + Load + link to the full suite-tab editor
         pgbc.gridy = 0; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
         appSettingTabPanel.add(JLabel("App:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
@@ -231,10 +232,14 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_appBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
         _pt_loadBtn = JButton("Load", actionPerformed=self._onInlineLoadSetting)
         _pt_loadBtn.setToolTipText("Load selected app setting into all config fields")
-        _pt_delBtn  = JButton("Delete App", actionPerformed=self._onInlineDeleteSetting)
-        _pt_delBtn.setToolTipText("Delete this app setting and all its endpoints")
+        self._inlineOpenMainSettingsBtn = JButton(
+            "Open Main", actionPerformed=self._onOpenMainAppSetting
+        )
+        self._inlineOpenMainSettingsBtn.setToolTipText(
+            "Select AppSetting in the main CipherKit suite tab for full profile management"
+        )
         _pt_appBtns.add(_pt_loadBtn)
-        _pt_appBtns.add(_pt_delBtn)
+        _pt_appBtns.add(self._inlineOpenMainSettingsBtn)
         _pt_appRow.add(_pt_appBtns, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_appRow, pgbc)
 
@@ -247,8 +252,17 @@ class HashGenEditorTab(IMessageEditorTab):
         self._inlineUrlLabel.setForeground(Color(80, 80, 80))
         appSettingTabPanel.add(self._inlineUrlLabel, pgbc)
 
-        # Row 2: Endpoint keys order (editable, linked to main keys field)
+        # Row 2: Most-specific endpoint resolved for this request
         pgbc.gridy = 2; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        appSettingTabPanel.add(JLabel("Matched Endpoint:"), pgbc)
+        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineMatchedEndpointField = JTextField("(none)")
+        self._inlineMatchedEndpointField.setEditable(False)
+        self._inlineMatchedEndpointField.setForeground(Color(80, 80, 80))
+        appSettingTabPanel.add(self._inlineMatchedEndpointField, pgbc)
+
+        # Row 3: Endpoint keys order (editable, linked to main keys field)
+        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
         appSettingTabPanel.add(JLabel("Sign Order:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         _pt_epRow = JPanel(BorderLayout(4, 0))
@@ -263,8 +277,8 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_epRow.add(_pt_saveEpBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_epRow, pgbc)
 
-        # Row 3: Apply Custom Value (inline key + value + button)
-        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        # Row 4: Apply Custom Value (inline key + value + button)
+        pgbc.gridy = 4; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
         appSettingTabPanel.add(JLabel("Update Value:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         _pt_applyRow = JPanel(BorderLayout(4, 0))
@@ -285,8 +299,15 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_applyRow.add(_pt_doApplyBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_applyRow, pgbc)
 
+        # Row 5: Compact, non-blocking request/profile status
+        pgbc.gridy = 5; pgbc.gridx = 0; pgbc.gridwidth = 2
+        pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        self._inlineSettingStatus = JLabel("No profile matched")
+        self._inlineSettingStatus.setForeground(Color(100, 100, 100))
+        appSettingTabPanel.add(self._inlineSettingStatus, pgbc)
+
         # Filler row to push content to top
-        pgbc.gridy = 4; pgbc.gridx = 0; pgbc.gridwidth = 2
+        pgbc.gridy = 6; pgbc.gridx = 0; pgbc.gridwidth = 2
         pgbc.weighty = 1.0; pgbc.fill = GridBagConstraints.VERTICAL
         appSettingTabPanel.add(JPanel(), pgbc)
 
@@ -533,6 +554,11 @@ class HashGenEditorTab(IMessageEditorTab):
             )
 
             if not app:
+                if hasattr(self, '_inlineMatchedEndpointField'):
+                    self._inlineMatchedEndpointField.setText("(none)")
+                if hasattr(self, '_inlineSettingStatus'):
+                    self._inlineSettingStatus.setText("No profile matched")
+                    self._inlineSettingStatus.setForeground(Color(100, 100, 100))
                 return False
 
             self._applyAppSettingToInlineUI(app, ep)
@@ -541,7 +567,9 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._inlineSettingCombo.setSelectedItem(app_name)
                 if hasattr(self, '_inlineSettingStatus'):
                     self._inlineSettingStatus.setText("Loaded: %s%s" % (app_name, (" / " + pattern) if pattern else ""))
+                    self._inlineSettingStatus.setForeground(Color(0, 128, 0))
                 self._inlineUrlLabel.setText(path)
+                self._inlineMatchedEndpointField.setText(pattern or "(default profile)")
                 if ep:
                     self._inlineEpKeysField.setText(ep.get("keys_order", ""))
                 else:
@@ -562,7 +590,7 @@ class HashGenEditorTab(IMessageEditorTab):
             self._passcodeField.setText(app["secret"])
         custom_data = app.get("custom_data")
         if ep and "custom_data" in ep:
-            custom_data = ep["custom_data"]
+            custom_data = merge_custom_data(custom_data, ep["custom_data"])
         if custom_data is not None:
             # Merge incoming custom_data with current UI pairs to avoid overwriting non-empty user input with empty/null settings
             current_pairs = self._customDataPanel.getPairs()
@@ -658,125 +686,118 @@ class HashGenEditorTab(IMessageEditorTab):
             pass
 
     def _onInlineKfFind(self, event=None):
-        """Find key order off the Swing event thread and apply the selected match."""
+        """Find key order on a worker thread, then apply the result on Swing."""
         try:
             from collections import OrderedDict
+            from core.key_finder import find_key_orders
+
             known = _safe_text(self._inlineKfKnownArea.getText().strip())
             if not known:
                 self._setKfStatus("Enter a known string", "error")
                 return
 
             self._autoHashTimer.stop()
-
-            # Parse body directly (auto-detect format)
             body = self._bodyArea.getText().strip()
             pairs = OrderedDict()
             try:
-                data = parse_body(body, "")  # empty string = auto-detect
-                pairs.update(flatten_data(data))
+                pairs.update(flatten_data(parse_body(body, "")))
             except Exception:
                 pass
-
-            # Merge Custom Data panel fields (token, etc.) — these override body fields
-            for k, v in self._customDataPanel.getPairs().items():
-                if k:
-                    pairs[k] = v
-
+            for key, value in self._customDataPanel.getPairs().items():
+                if key:
+                    pairs[key] = value
             if not pairs:
                 self._setKfStatus("No fields found", "error")
                 return
 
-            # ---- Auto-detect trailing 64-char extra field ----
-            _TOKEN_LEN = 64
-            _auto_detect_note = ""
+            token_len = 64
+            auto_detect_note = ""
             app_name = str(self._inlineSettingCombo.getSelectedItem()).strip().lower()
             if app_name == "aba mobile" and self._customDataPanel._rows:
-                # If first row key is empty, default it to "token" for auto-detection
-                if not self._customDataPanel._rows[0][0].getText().strip():
-                    self._customDataPanel._rows[0][0].setText("token")
-
-                first_key = self._customDataPanel._rows[0][0].getText().strip()
-                first_val = self._customDataPanel._rows[0][1].getText().strip()
-                # Only auto-detect if the first row (token) has a key but NO value
-                if first_key and not first_val and len(known) > _TOKEN_LEN:
-                    token_val = known[-_TOKEN_LEN:]
-                    pairs[first_key] = token_val
-                    _auto_detect_note = "[Auto-detect] %s : %s" % (first_key, token_val)
-                    # Populate the auto-detected token back to the Custom Data panel
-                    self._customDataPanel._rows[0][1].setText(token_val)
+                row_key, row_value = self._customDataPanel._rows[0]
+                if not row_key.getText().strip():
+                    row_key.setText("token")
+                first_key = row_key.getText().strip()
+                first_value = row_value.getText().strip()
+                if first_key and not first_value and len(known) > token_len:
+                    token_value = known[-token_len:]
+                    pairs[first_key] = token_value
+                    auto_detect_note = "[Auto-detect] %s : %s" % (first_key, token_value)
+                    row_value.setText(token_value)
 
             self._inlineKfFindBtn.setEnabled(False)
-            try:
-                keys = list(pairs.keys())
-                values = dict((k, _safe_text(v)) for k, v in pairs.items())
-                matches = []
-                total_visited = [0]
+            self._setKfStatus("Searching...", "normal")
+            values = dict((key, _safe_text(value)) for key, value in pairs.items())
+            pairs_snapshot = dict(pairs)
+            known_snapshot = known
+            note_snapshot = auto_detect_note
+            outer = self
 
-                def dfs(current_perm, remaining_keys, remaining_known):
-                    total_visited[0] += 1
-                    if len(matches) >= 100 or total_visited[0] >= 10000:
-                        return
-                    if not remaining_known:
-                        if current_perm:
-                            matches.append(current_perm)
-                        return
-                    for key in remaining_keys:
-                        value = values[key]
-                        if not value:
-                            continue
-                        if remaining_known.startswith(value):
-                            next_keys = [candidate for candidate in remaining_keys if candidate != key]
-                            dfs(current_perm + (key,), next_keys, remaining_known[len(value):])
+            def run_search():
+                try:
+                    matches, visited, capped = find_key_orders(values, known_snapshot)
+                    lines = []
+                    if note_snapshot:
+                        lines.extend([note_snapshot, u"\u2500" * 52])
+                    if not matches:
+                        lines += ["No match found.", ""]
+                        found_keys = [
+                            (key, value) for key, value in pairs_snapshot.items()
+                            if value and _safe_text(value) in known_snapshot
+                        ]
+                        if found_keys:
+                            lines.append("Values found in known string:")
+                            lines.extend([u"  %s : %s" % (_safe_text(key), _safe_text(value))
+                                          for key, value in found_keys])
+                            lines.append("")
+                        remaining = known_snapshot
+                        for _, value in found_keys:
+                            remaining = remaining.replace(_safe_text(value), u"\x00", 1)
+                        unknown_parts = [part for part in remaining.split("\x00") if part]
+                        if unknown_parts:
+                            lines.append("Unknown segment(s) not from any field:")
+                            lines.extend([u"  %s" % _safe_text(part) for part in unknown_parts])
+                    else:
+                        for index, match in enumerate(matches, 1):
+                            if len(matches) > 1:
+                                lines.append("Match #%d:" % index)
+                            lines.append(u"Key order : %s" % u", ".join(
+                                [_safe_text(key) for key in match]
+                            ))
+                            if index < len(matches):
+                                lines.append("")
+                    if capped:
+                        lines.extend(["", "(Note: search was capped at 100 matches to optimize performance)"])
+                    result_text = u"\n".join([_safe_text(line) for line in lines])
 
-                dfs((), keys, known)
-                self._lastKfMatches = matches
+                    def finish_search():
+                        outer._inlineKfFindBtn.setEnabled(True)
+                        outer._lastKfMatches = matches
+                        state = "found" if matches else "error"
+                        outer._setKfStatus(result_text, state)
+                        if matches:
+                            outer._onInlineApplyResult(note_snapshot, capped)
 
-                lines = []
-                if _auto_detect_note:
-                    lines.append(_auto_detect_note)
-                    lines.append(u"\u2500" * 52)
+                    SwingUtilities.invokeLater(finish_search)
+                except Exception as error:
+                    error_text = "Error: %s\n%s" % (str(error), traceback.format_exc())
 
-                if not matches:
-                    lines += ["No match found.", ""]
-                    found_keys = [(k, v) for k, v in pairs.items()
-                                  if v and _safe_text(v) in known]
-                    if found_keys:
-                        lines.append("Values found in known string:")
-                        for key, value in found_keys:
-                            lines.append(u"  %s : %s" % (_safe_text(key), _safe_text(value)))
-                        lines.append("")
-                    remaining = known
-                    for _, value in found_keys:
-                        remaining = remaining.replace(_safe_text(value), u"\x00", 1)
-                    unknown_parts = [part for part in remaining.split("\x00") if part]
-                    if unknown_parts:
-                        lines.append("Unknown segment(s) not from any field:")
-                        for part in unknown_parts:
-                            lines.append(u"  %s" % _safe_text(part))
-                    self._setKfStatus(u"\n".join([_safe_text(line) for line in lines]), "error")
-                    return
+                    def finish_error():
+                        outer._lastKfMatches = []
+                        outer._inlineKfFindBtn.setEnabled(True)
+                        outer._setKfStatus(error_text, "error")
 
-                for index, match in enumerate(matches, 1):
-                    if len(matches) > 1:
-                        lines.append("Match #%d:" % index)
-                    order_text = u", ".join([_safe_text(key) for key in match])
-                    lines.append(u"Key order : %s" % order_text)
-                    if index < len(matches):
-                        lines.append("")
-                capped = len(matches) >= 100 or total_visited[0] >= 10000
-                if capped:
-                    lines.append("")
-                    lines.append("(Note: search was capped at 100 matches to optimize performance)")
-                self._setKfStatus(u"\n".join([_safe_text(line) for line in lines]), "found")
-                self._onInlineApplyResult(_auto_detect_note, capped)
-            finally:
-                self._inlineKfFindBtn.setEnabled(True)
+                    SwingUtilities.invokeLater(finish_error)
 
-        except Exception as e:
+            import threading
+            worker = threading.Thread(target=run_search)
+            worker.setDaemon(True)
+            worker.start()
+        except Exception as error:
             self._lastKfMatches = []
             self._inlineKfFindBtn.setEnabled(True)
-            self._setKfStatus("Error: %s\n%s" % (str(e), traceback.format_exc()), "error")
-            print("[CipherKit] Key Finder error: %s\n%s" % (str(e), traceback.format_exc()))
+            self._setKfStatus("Error: %s\n%s" % (str(error), traceback.format_exc()), "error")
+            print("[CipherKit] Key Finder error: %s\n%s" % (str(error), traceback.format_exc()))
 
     def _setKfResultStyled(self, text):
         """Restore the legacy styled Key Finder result rendering."""
@@ -966,10 +987,13 @@ class HashGenEditorTab(IMessageEditorTab):
             # before the key was set, producing a spurious "Key is required" error)
             try:
                 idx = self._configTabs.getSelectedIndex()
-                if idx == 1:
+                title = str(self._configTabs.getTitleAt(idx)) if idx >= 0 else ""
+                if title == "Crypto":
                     self._onAutoDecrypt()
-                else:
+                elif title == "Hash":
                     self._onGenerate()
+                else:
+                    self._onSettingTabFocus()
             except Exception:
                 pass
         except Exception as e:
@@ -1148,6 +1172,9 @@ class HashGenEditorTab(IMessageEditorTab):
         try:
             if hasattr(self, '_inlineSettingStatus'):
                 self._inlineSettingStatus.setText("Saved: %s" % label)
+                self._inlineSettingStatus.setForeground(Color(0, 128, 0))
+            if pattern and hasattr(self, '_inlineMatchedEndpointField'):
+                self._inlineMatchedEndpointField.setText(pattern)
         except Exception:
             pass
         self._hashOutput.setText("Saved: %s" % label)
@@ -1162,18 +1189,44 @@ class HashGenEditorTab(IMessageEditorTab):
         if not app:
             return
         try:
-            # Find matching endpoint for current URL
             path = getattr(self, '_requestPath', '')
-            matched_ep = None
-            for pat, ep in app.get("endpoints", {}).items():
-                if pat and pat in path:
-                    matched_ep = ep
-                    break
+            matched_pattern, matched_ep = (
+                self._extender.app_setting_manager.find_endpoint_in_app(name, path)
+            )
             self._applyAppSettingToInlineUI(app, matched_ep)
-            self._hashOutput.setText("Loaded setting: %s" % name)
-            print("[CipherKit] Manually loaded setting: %s" % name)
+            self._inlineMatchedEndpointField.setText(matched_pattern or "(none)")
+            if matched_ep:
+                self._inlineEpKeysField.setText(matched_ep.get("keys_order", ""))
+                self._inlineSettingStatus.setText(
+                    "Loaded: %s / %s" % (name, matched_pattern)
+                )
+                self._inlineSettingStatus.setForeground(Color(0, 128, 0))
+            else:
+                self._inlineEpKeysField.setText("")
+                self._inlineSettingStatus.setText(
+                    "Loaded profile; current URL has no saved endpoint"
+                )
+                self._inlineSettingStatus.setForeground(Color(170, 110, 0))
+            self._refreshInlineSettingInfo()
+            print("[CipherKit] Manually loaded setting: %s / %s" % (
+                name, matched_pattern or "(none)"
+            ))
         except Exception as e:
             print("[CipherKit] Load setting error: %s" % str(e))
+
+    def _onOpenMainAppSetting(self, event=None):
+        """Prepare the full AppSetting suite tab for profile management."""
+        try:
+            selected_name = str(self._inlineSettingCombo.getSelectedItem())
+            self._extender.show_main_app_setting(selected_name)
+            self._inlineSettingStatus.setText(
+                "Main AppSetting selected; open the CipherKit suite tab"
+            )
+            self._inlineSettingStatus.setForeground(Color(80, 80, 80))
+        except Exception as e:
+            self._inlineSettingStatus.setText("Could not open main AppSetting")
+            self._inlineSettingStatus.setForeground(Color(180, 0, 0))
+            print("[CipherKit] Open main AppSetting error: %s" % str(e))
 
     @staticmethod
     def _refill_setting_combo(combo, names):
@@ -1202,58 +1255,68 @@ class HashGenEditorTab(IMessageEditorTab):
             path = getattr(self, '_requestPath', '')
             self._inlineUrlLabel.setText(path or "(no request loaded)")
             self._inlineEpKeysField.setText(self._keysField.getText())
+            name = str(self._inlineSettingCombo.getSelectedItem())
+            pattern, endpoint = (
+                self._extender.app_setting_manager.find_endpoint_in_app(name, path)
+                if name and name != "(none)" else (None, None)
+            )
+            self._inlineMatchedEndpointField.setText(pattern or "(none)")
+            if endpoint and endpoint.get("keys_order"):
+                self._inlineEpKeysField.setText(endpoint.get("keys_order", ""))
             self._refreshInlineSettingInfo()
         except Exception as e:
             print("[CipherKit] AppSetting tab focus error: %s" % str(e))
 
     def _refreshInlineSettingInfo(self):
-        """Refresh the setting info text area with the selected app's saved config."""
+        """Show a compact, redacted summary for the current request/profile."""
         try:
             name = str(self._inlineSettingCombo.getSelectedItem())
             if name == "(none)":
                 self._settingInfoArea.setText("(no setting selected - pick one from the dropdown above)")
+                self._inlineMatchedEndpointField.setText("(none)")
+                self._inlineSettingStatus.setText("No profile selected")
+                self._inlineSettingStatus.setForeground(Color(100, 100, 100))
                 return
             app = self._extender.app_setting_manager.get_app(name)
             if not app:
                 self._settingInfoArea.setText("(setting '%s' not found)" % name)
                 return
             path = getattr(self, '_requestPath', '')
+            pattern, endpoint = (
+                self._extender.app_setting_manager.find_endpoint_in_app(name, path)
+            )
+            self._inlineMatchedEndpointField.setText(pattern or "(none)")
+            if pattern:
+                self._inlineSettingStatus.setText("Profile matched: %s" % pattern)
+                self._inlineSettingStatus.setForeground(Color(0, 128, 0))
+            else:
+                self._inlineSettingStatus.setText(
+                    "Profile selected; current URL has no saved endpoint"
+                )
+                self._inlineSettingStatus.setForeground(Color(170, 110, 0))
             lines = []
             lines.append("App Setting : %s" % name)
             lines.append("Current URL: %s" % (path or "(none)"))
+            lines.append("Matched Endpoint: %s" % (pattern or "(none)"))
             lines.append("")
-            lines.append("Shared Config")
+            lines.append("Request Profile")
             lines.append("-" * 40)
             lines.append("  Algorithm : %s" % app.get("algorithm", ""))
-            lines.append("  Secret    : %s" % app.get("secret", ""))
             lines.append("  Hash Field: %s" % app.get("hash_field", ""))
+            if app.get("secret"):
+                lines.append("  Secret    : %s" % mask_secret(app.get("secret")))
             custom_data = app.get("custom_data", {})
             if custom_data:
-                custom_str = ", ".join("%s=%s" % (k, v) for k, v in custom_data.items())
-                lines.append("  Custom Data: %s" % custom_str)
-            c = app.get("crypto", {})
-            if c:
-                lines.append("")
-                lines.append("  Crypto")
-                lines.append("    Algorithm: %s" % c.get("algorithm", ""))
-                lines.append("    Key      : %s" % c.get("key", ""))
-                lines.append("    IV       : %s" % c.get("iv", ""))
-                lines.append("    Field    : %s" % c.get("field", ""))
-            endpoints = app.get("endpoints", {})
-            if endpoints:
-                lines.append("")
-                lines.append("Endpoints")
-                lines.append("-" * 40)
-                for pat, ep in endpoints.items():
-                    matched = " < matched" if pat and pat in path else ""
-                    custom_str = ""
-                    if "custom_data" in ep and ep["custom_data"]:
-                        custom_str = " [Custom: %s]" % ", ".join("%s=%s" % (k, v) for k, v in ep["custom_data"].items())
-                    lines.append("  %-28s  %s%s%s" % (pat, ep.get("keys_order", ""), custom_str, matched))
+                lines.append("  Shared Custom Keys: %s" % ", ".join(custom_data.keys()))
+            if endpoint:
+                lines.append("  Sign Order: %s" % endpoint.get("keys_order", ""))
+                endpoint_custom = endpoint.get("custom_data", {})
+                if endpoint_custom:
+                    lines.append("  Endpoint Custom Keys: %s" % ", ".join(endpoint_custom.keys()))
             else:
                 lines.append("")
-                lines.append("No endpoints saved yet.")
-                lines.append("Set keys order in the Hash tab, then click Save Endpoint.")
+                lines.append("No endpoint matches this request.")
+                lines.append("Set Sign Order above, then click Save Endpoint.")
             self._settingInfoArea.setText("\n".join(lines))
             self._settingInfoArea.setCaretPosition(0)
         except Exception as e:

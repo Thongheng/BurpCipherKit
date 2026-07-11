@@ -1,6 +1,28 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import json, os
+import fnmatch, json, os
+
+
+def mask_secret(value, visible_tail=4):
+    """Mask a stored secret for read-only UI summaries."""
+    if value is None:
+        return ""
+    text = str(value)
+    if not text:
+        return ""
+    if len(text) <= visible_tail:
+        return "********"
+    return "********" + text[-visible_tail:]
+
+
+def merge_custom_data(shared_data, endpoint_data):
+    """Apply endpoint custom-data overrides without dropping shared values."""
+    merged = {}
+    if shared_data:
+        merged.update(shared_data)
+    if endpoint_data:
+        merged.update(endpoint_data)
+    return merged
 
 class AppSettingManager(object):
     """Manages app-level settings stored in a JSON file.
@@ -105,7 +127,6 @@ class AppSettingManager(object):
 
     def find_by_url(self, url_path):
         """Return the most-specific exact, glob, or substring endpoint match."""
-        import fnmatch
         candidates = []
         sequence = 0
         for app_name, app in self.app_settings.items():
@@ -129,6 +150,35 @@ class AppSettingManager(object):
             return (None, None, None, None)
         best = max(candidates, key=lambda candidate: candidate[0])
         return (best[1], best[2], best[3], best[4])
+
+    def find_endpoint_in_app(self, app_name, url_path):
+        """Return the most-specific endpoint match within one selected app."""
+        app = self.get_app(app_name)
+        if not app or not url_path:
+            return (None, None)
+
+        candidates = []
+        sequence = 0
+        for pattern, endpoint in app.get("endpoints", {}).items():
+            if not pattern:
+                continue
+            sequence += 1
+            if url_path == pattern:
+                match_kind = 3
+            elif fnmatch.fnmatch(url_path, pattern):
+                match_kind = 2
+            elif pattern in url_path:
+                match_kind = 1
+            else:
+                continue
+            literal_length = len(pattern.replace("*", "").replace("?", ""))
+            score = (match_kind, literal_length, -sequence)
+            candidates.append((score, pattern, endpoint))
+
+        if not candidates:
+            return (None, None)
+        best = max(candidates, key=lambda candidate: candidate[0])
+        return (best[1], best[2])
 
     def resolve_for_url(self, url_path, default_app_name=None):
         """Resolve an endpoint match, falling back to a configured default app."""

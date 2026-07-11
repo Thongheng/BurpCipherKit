@@ -36,7 +36,7 @@ if _here not in sys.path:
 
 from core.snippet_manager import SnippetManager
 from core.crypto_snippet_manager import CryptoSnippetManager
-from core.app_setting_manager import AppSettingManager
+from core.app_setting_manager import AppSettingManager, mask_secret, merge_custom_data
 from core.body_parser import parse_body, serialize_body, flatten_data
 from core.crypto_engine import CryptoEngine
 from core.crypto_snippet_engine import CryptoSnippetEngine
@@ -168,7 +168,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             secret      = app.get("secret", "")
             custom_data = app.get("custom_data", {})
             if ep and "custom_data" in ep:
-                custom_data = ep["custom_data"]
+                custom_data = merge_custom_data(custom_data, ep["custom_data"])
             hash_field  = app.get("hash_field", "hash")
             keys_order  = None
             if ep and ep.get("keys_order"):
@@ -987,7 +987,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             lines.append("Shared Config")
             lines.append("-" * 44)
             lines.append("  Algorithm     : %s" % app.get("algorithm", ""))
-            lines.append("  Secret        : %s" % app.get("secret", ""))
+            lines.append("  Secret        : %s" % mask_secret(app.get("secret", "")))
             lines.append("  Hash Field    : %s" % app.get("hash_field", ""))
             lines.append("  Default KF Key: %s" % app.get("default_kf_key", "token"))
             custom_data = app.get("custom_data", {})
@@ -999,8 +999,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                 lines.append("")
                 lines.append("  Crypto")
                 lines.append("    Algorithm: %s" % c.get("algorithm", ""))
-                lines.append("    Key      : %s" % c.get("key", ""))
-                lines.append("    IV       : %s" % c.get("iv", ""))
+                lines.append("    Key      : %s" % mask_secret(c.get("key", "")))
+                lines.append("    IV       : %s" % mask_secret(c.get("iv", "")))
                 lines.append("    Field    : %s" % c.get("field", ""))
             endpoints = app.get("endpoints", {})
             if endpoints:
@@ -1608,3 +1608,13 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             except Exception:
                 pass
         self._editor_tabs = alive_tabs
+
+    def show_main_app_setting(self, app_name=None):
+        """Select the full AppSetting editor inside the CipherKit suite tab."""
+        if not self.ext_settings.get("show_app_setting", True):
+            raise ValueError("The main AppSetting tab is disabled in Extension Options.")
+        self._refreshSettingCombo()
+        if app_name and app_name != "(none)":
+            self._settingCombo.setSelectedItem(app_name)
+        self._refreshSettingSummary()
+        self._tabbedPane.setSelectedComponent(self._settingPanel)

@@ -236,36 +236,50 @@ def serialize_body(updated_data, original_body, content_type=""):
             pass
 
     if ct == "multipart/form-data":
-        # Bug-4: auto-detect boundary from body when header is missing; error instead of silently falling back
+        # Auto-detect the boundary from the body when the header is missing.
         boundary = _get_boundary(content_type)
         if not boundary:
             boundary = _auto_detect_boundary(original_body)
         if boundary:
             try:
                 delimiter = "--" + boundary
-                segments = original_body.split(delimiter)
                 original_data = _try_parse_multipart(original_body, content_type) or {}
                 changed = set(
                     key for key, value in updated_data.items()
                     if key not in original_data or str(original_data.get(key)) != str(value)
                 )
                 seen = set()
-                output_segments = [segments[0]]
-                closing_segment = None
+                # A boundary is valid only as a complete line. Splitting on the
+                # token itself corrupts file parts containing boundary-like bytes.
+                boundary_lines = []
+                offset = 0
+                for line in original_body.splitlines(True):
+                    line_value = line.rstrip("\r\n")
+                    if line_value == delimiter or line_value == delimiter + "--":
+                        boundary_lines.append((offset, offset + len(line), line_value == delimiter + "--"))
+                    offset += len(line)
+                if not boundary_lines:
+                    raise ValueError("multipart body has no complete boundary lines")
 
-                for segment in segments[1:]:
-                    if segment.startswith("--"):
-                        closing_segment = segment
+                output = [original_body[:boundary_lines[0][0]]]
+                line_end = "\r\n" if "\r\n" in original_body else "\n"
+
+                for index, (boundary_start, boundary_end, is_closing) in enumerate(boundary_lines):
+                    output.append(original_body[boundary_start:boundary_end])
+                    if is_closing:
                         break
 
+                    part_start = boundary_end
+                    part_end = boundary_lines[index + 1][0] if index + 1 < len(boundary_lines) else len(original_body)
+                    segment = original_body[part_start:part_end]
                     separator = "\r\n\r\n" if "\r\n\r\n" in segment else "\n\n"
                     if separator not in segment:
-                        output_segments.append(segment)
+                        output.append(segment)
                         continue
                     headers, body_with_suffix = segment.split(separator, 1)
                     match = re.search(r'name=(?:"([^"]*)"|([^;\r\n]+))', headers, re.I)
                     if not match:
-                        output_segments.append(segment)
+                        output.append(segment)
                         continue
                     name = match.group(1) if match.group(1) is not None else match.group(2).strip()
                     seen.add(name)
@@ -274,21 +288,20 @@ def serialize_body(updated_data, original_body, content_type=""):
                     is_file = re.search(r'filename=', headers, re.I) is not None
                     if name in changed and not is_file:
                         line_end = "\r\n" if body_with_suffix.endswith("\r\n") else "\n"
-                        output_segments.append(
+                        output.append(
                             headers + separator + str(updated_data[name]) + line_end
                         )
                     else:
-                        output_segments.append(segment)
+                        output.append(segment)
 
-                line_end = "\r\n" if "\r\n" in original_body else "\n"
                 for key, value in updated_data.items():
                     if key not in seen:
-                        output_segments.append(
-                            line_end + 'Content-Disposition: form-data; name="%s"' % key
+                        output.insert(
+                            -1,
+                            'Content-Disposition: form-data; name="%s"' % key
                             + line_end + line_end + str(value) + line_end
                         )
-                output_segments.append(closing_segment if closing_segment is not None else "--" + line_end)
-                return delimiter.join(output_segments)
+                return "".join(output)
             except:
                 pass
         else:

@@ -4,8 +4,27 @@ import unittest
 
 from core.key_finder import (
     compare_generated_hash, format_hash_comparison, strip_hash_comparison,
-    should_render_hash_output,
+    should_render_hash_output, find_key_orders,
 )
+
+
+class KeyOrderSearchTests(unittest.TestCase):
+    def test_finds_orders_without_mutating_input(self):
+        fields = {"first": "ab", "second": "cd"}
+        matches, visited, capped = find_key_orders(fields, "abcd")
+
+        self.assertEqual([("first", "second")], matches)
+        self.assertGreater(visited, 0)
+        self.assertFalse(capped)
+        self.assertEqual({"first": "ab", "second": "cd"}, fields)
+
+    def test_reports_cap_for_large_search(self):
+        fields = dict(("k%d" % i, "a") for i in range(10))
+        matches, visited, capped = find_key_orders(fields, "aaaaaaaaab", max_visited=20)
+
+        self.assertEqual([], matches)
+        self.assertEqual(20, visited)
+        self.assertTrue(capped)
 
 class CompareGeneratedHashTests(unittest.TestCase):
     def test_compares_case_insensitively(self):

@@ -2,6 +2,35 @@
 from __future__ import print_function
 
 
+def find_key_orders(values, known, max_matches=100, max_visited=10000):
+    """Find value concatenation orders without mutating the caller's mapping."""
+    keys = list(values.keys())
+    normalized = dict((key, str(value)) for key, value in values.items())
+    matches = []
+    visited = [0]
+
+    def dfs(current, remaining, suffix):
+        visited[0] += 1
+        if len(matches) >= max_matches or visited[0] >= max_visited:
+            return
+        if not suffix:
+            if current:
+                matches.append(tuple(current))
+            return
+        for key in remaining:
+            if visited[0] >= max_visited or len(matches) >= max_matches:
+                return
+            value = normalized[key]
+            if not value or not suffix.startswith(value):
+                continue
+            next_keys = [candidate for candidate in remaining if candidate != key]
+            dfs(current + [key], next_keys, suffix[len(value):])
+
+    dfs([], keys, str(known))
+    capped = len(matches) >= max_matches or visited[0] >= max_visited
+    return matches, visited[0], capped
+
+
 def compare_generated_hash(generated_hash, payload, hash_field):
     """Return valid, invalid, missing, or error for a generated hash."""
     generated = str(generated_hash)

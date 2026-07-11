@@ -2,7 +2,26 @@ from __future__ import print_function
 
 import unittest
 
-from core.app_setting_manager import AppSettingManager
+from core.app_setting_manager import AppSettingManager, mask_secret, merge_custom_data
+
+
+class SecretMaskingTests(unittest.TestCase):
+    def test_masks_secret_but_keeps_last_four_characters(self):
+        self.assertEqual("********3456", mask_secret("super_secret_3456"))
+
+    def test_masks_short_secret_without_exposing_value(self):
+        self.assertEqual("********", mask_secret("abc"))
+
+
+class CustomDataMergeTests(unittest.TestCase):
+    def test_endpoint_values_override_shared_values_without_dropping_other_keys(self):
+        self.assertEqual(
+            {"client": "mobile", "token": "endpoint-token"},
+            merge_custom_data(
+                {"client": "mobile", "token": "shared-token"},
+                {"token": "endpoint-token"},
+            ),
+        )
 
 
 class ResolveForUrlTests(unittest.TestCase):
@@ -52,6 +71,29 @@ class ResolveForUrlTests(unittest.TestCase):
             (None, None, None, None),
             self.manager.resolve_for_url("/unknown", "(none)")
         )
+
+    def test_selected_app_uses_most_specific_endpoint_match(self):
+        self.manager.app_settings = {
+            "ABA Mobile": {
+                "endpoints": {
+                    "/api/v3/*": {"keys_order": "broad"},
+                    "/api/v3/pay": {"keys_order": "exact"},
+                }
+            }
+        }
+
+        pattern, endpoint = self.manager.find_endpoint_in_app(
+            "ABA Mobile", "/api/v3/pay"
+        )
+
+        self.assertEqual("/api/v3/pay", pattern)
+        self.assertEqual("exact", endpoint["keys_order"])
+
+    def test_selected_app_returns_no_endpoint_for_unmatched_url(self):
+        pattern, endpoint = self.manager.find_endpoint_in_app("ABA Mobile", "/unmatched")
+
+        self.assertIsNone(pattern)
+        self.assertIsNone(endpoint)
 
 
 class SaveAppTests(unittest.TestCase):

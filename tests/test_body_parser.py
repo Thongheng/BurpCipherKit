@@ -45,6 +45,22 @@ class MultipartSerializationTests(unittest.TestCase):
         self.assertIn('name="hash"\r\n\r\nabc123', result)
         self.assertEqual(1, result.count("--b--"))
 
+    def test_preserves_boundary_like_bytes_inside_file_content(self):
+        original = (
+            "--b\r\n"
+            "Content-Disposition: form-data; name=\"upload\"; filename=\"a.bin\"\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n"
+            "prefix--b--suffix\r\n"
+            "--b--\r\n"
+        )
+        data = parse_body(original, "multipart/form-data; boundary=b")
+        data["hash"] = "abc123"
+
+        result = serialize_body(data, original, "multipart/form-data; boundary=b")
+
+        self.assertIn("prefix--b--suffix", result)
+        self.assertTrue(result.endswith("--b--\r\n"))
+
 
 if __name__ == "__main__":
     unittest.main()
